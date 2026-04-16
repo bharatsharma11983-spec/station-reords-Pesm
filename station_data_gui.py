@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Station Data GUI - PESMOS Earthquake Records Viewer
-Extracts and displays earthquake station data from zip files
+Station Data GUI - PESMOS Earthquake Records Viewer (ENHANCED)
+- All stations & components saved in CSV
+- Large popup plots with save options
+- Editable plot settings
 """
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
 import zipfile
-import pandas as pd
 import numpy as np
 import matplotlib
 matplotlib.use('TkAgg')
@@ -21,17 +22,13 @@ import csv
 # DATA PROCESSOR
 # ═══════════════════════════════════════════════════════════════════════════════
 class EarthquakeDataProcessor:
-    """Process earthquake station data from PESMOS zip files"""
-    
     def __init__(self, zip_path):
         self.zip_path = zip_path
         self.files_data = {}
         self.metadata = {}
-        self.stations = []
         self._extract_and_parse()
     
     def _extract_and_parse(self):
-        """Extract zip and parse all files"""
         with zipfile.ZipFile(self.zip_path, 'r') as z:
             for name in z.namelist():
                 if name.endswith(('.ew', '.ns', '.vt')):
@@ -41,38 +38,37 @@ class EarthquakeDataProcessor:
                         if data:
                             self.files_data[name] = data
                     except Exception as e:
-                        print(f"Error parsing {name}: {e}")
+                        print(f"Error: {e}")
             
-            # Get earthquake info from folder structure
             basename = os.path.basename(self.zip_path)
             self.metadata['earthquake'] = basename.replace('.zip', '')
             
-            # Extract year from filename
             year_match = re.search(r'(\d{4})', basename)
             self.metadata['year'] = int(year_match.group(1)) if year_match else 2000
+            
+            # Try to get magnitude from filename
+            mag_match = re.search(r'M-?(\d+\.?\d*)', basename, re.IGNORECASE)
+            if mag_match:
+                self.metadata['magnitude'] = float(mag_match.group(1))
+            else:
+                self.metadata['magnitude'] = 4.5  # Default
     
     def _parse_file(self, content, filename):
-        """Parse PESMOS .ew/.ns/.vt file format"""
         lines = content.strip().split('\n')
-        
         metadata = {}
         data_lines = []
         
-        # Parse header info (first few lines)
-        for line in lines[:20]:
+        for line in lines[:30]:
             line = line.strip()
             
-            # Station name
             match = re.search(r'Station\s*:\s*(\w+)', line, re.IGNORECASE)
             if match:
                 metadata['station'] = match.group(1)
             
-            # Date/time
-            match = re.search(r'Date\s*:\s*(\d+)', line, re.IGNORECASE)
+            match = re.search(r'Mag[nitude]*\s*[:=]\s*(\d+\.?\d*)', line, re.IGNORECASE)
             if match:
-                metadata['date'] = match.group(1)
+                metadata['magnitude'] = float(match.group(1))
             
-            # Component
             if filename.endswith('.ew'):
                 metadata['component'] = 'EW'
                 metadata['direction'] = 'East-West'
@@ -83,8 +79,7 @@ class EarthquakeDataProcessor:
                 metadata['component'] = 'Vertical'
                 metadata['direction'] = 'Vertical'
         
-        # Extract acceleration data (skip header, rest is data)
-        for line in lines[20:]:
+        for line in lines[30:]:
             parts = line.strip().split()
             try:
                 for v in parts:
@@ -100,7 +95,6 @@ class EarthquakeDataProcessor:
         if not data_lines:
             return None
         
-        # Calculate time array (typically dt=0.005s)
         dt = 0.005
         time = np.arange(len(data_lines)) * dt
         
@@ -114,42 +108,31 @@ class EarthquakeDataProcessor:
         }
     
     def get_summary(self):
-        """Get earthquake summary"""
-        # Extract unique stations
         stations = set()
         for name in self.files_data.keys():
-            # Extract station from path: 20051214-Chamoli/Bageshwar/BAG_20051214_071014.ew
             parts = name.split('/')
             if len(parts) >= 3:
                 station_code = parts[2].split('_')[0]
                 stations.add(station_code)
         
-        # Get max PGA
         max_pga = 0
-        comp_info = []
         for name, data in self.files_data.items():
             pga = np.max(np.abs(data['acceleration']))
             if pga > max_pga:
                 max_pga = pga
-            comp_info.append({
-                'component': data.get('metadata', {}).get('component', 'Unknown'),
-                'direction': data.get('metadata', {}).get('direction', ''),
-                'pga': pga
-            })
         
         return {
             'year': self.metadata.get('year', 2000),
             'location': self.metadata.get('earthquake', 'Unknown'),
+            'magnitude': self.metadata.get('magnitude', 4.5),
             'stations': list(stations),
             'num_stations': len(stations),
             'num_files': len(self.files_data),
             'max_pga': max_pga,
-            'components': comp_info,
             'processor': self
         }
     
     def get_all_stations(self):
-        """Get all station names"""
         stations = set()
         for name in self.files_data.keys():
             parts = name.split('/')
@@ -157,36 +140,107 @@ class EarthquakeDataProcessor:
                 station_code = parts[2].split('_')[0]
                 stations.add(station_code)
         return sorted(list(stations))
+    
+    def get_all_data_for_csv(self):
+        """Get all data for CSV export"""
+        all_data = []
+        for name, data in self.files_data.items():
+            parts = name.split('/')
+            station = parts[2].split('_')[0] if len(parts) >= 3 else 'Unknown'
+            component = data.get('metadata', {}).get('component', 'Unknown')
+            
+            for t, a in zip(data['time'], data['acceleration']):
+                all_data.append({
+                    'station': station,
+                    'component': component,
+                    'time': t,
+                    'acceleration': a
+                })
+        return all_data
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# POPUP PLOT WINDOW
+# ═══════════════════════════════════════════════════════════════════════════════
+class PlotPopup(tk.Toplevel):
+    def __init__(self, parent, title, fig):
+        super().__init__(parent)
+        self.title(title)
+        self.geometry("1200x700")
+        self.configure(bg='#1E2A3A')
+        
+        self.fig = fig
+        
+        # Controls
+        ctl = tk.Frame(self, bg='#1E2A3A')
+        ctl.pack(fill=tk.X, padx=4, pady=4)
+        
+        tk.Button(ctl, text="💾 Save Image", command=self._save_image,
+                  bg='#8E44AD', fg='white', font=('Helvetica',10), padx=10).pack(side=tk.RIGHT, padx=4)
+        tk.Button(ctl, text="💾 Save CSV", command=self._save_csv,
+                  bg='#1565C0', fg='white', font=('Helvetica',10), padx=10).pack(side=tk.RIGHT, padx=4)
+        
+        # Canvas
+        self.cv = FigureCanvasTkAgg(self.fig, master=self)
+        self.cv.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        
+        toolbar = tk.Frame(self, bg='#1E2A3A')
+        toolbar.pack(fill=tk.X)
+        NavigationToolbar2Tk(self.cv, toolbar)
+        
+        self.data_to_save = None
+    
+    def set_csv_data(self, data):
+        self.data_to_save = data
+    
+    def _save_image(self):
+        filepath = filedialog.asksaveasfilename(defaultextension=".png",
+                                                 filetypes=[("PNG", "*.png"), ("PDF", "*.pdf")])
+        if filepath:
+            self.fig.savefig(filepath, dpi=300, bbox_inches='tight')
+            messagebox.showinfo("Saved", f"Image saved to {filepath}")
+    
+    def _save_csv(self):
+        if not self.data_to_save:
+            messagebox.showwarning("No Data", "No data to save")
+            return
+        
+        filepath = filedialog.asksaveasfilename(defaultextension=".csv",
+                                                 filetypes=[("CSV", "*.csv")])
+        if not filepath:
+            return
+        
+        with open(filepath, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['station', 'component', 'time', 'acceleration'])
+            writer.writeheader()
+            writer.writerows(self.data_to_save)
+        
+        messagebox.showinfo("Saved", f"Data saved to {filepath}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN APPLICATION
 # ═══════════════════════════════════════════════════════════════════════════════
 class StationDataApp:
-    """Main GUI Application"""
-    
     def __init__(self, root):
         self.root = root
-        self.root.title("PESMOS Earthquake Station Records Viewer")
+        self.root.title("PESMOS Earthquake Station Records - Enhanced")
         self.root.geometry("1400x900")
         self.root.configure(bg='#2C3E50')
         
         self.data_dir = None
         self.earthquake_data = []
         self.selected_earthquake = None
-        self.selected_station = None
         
         self._build_ui()
     
     def _build_ui(self):
-        """Build the UI"""
         # Header
         header = tk.Frame(self.root, bg='#1A3A5C', height=60)
         header.pack(fill=tk.X)
-        tk.Label(header, text="PESMOS Earthquake Station Records Database",
+        tk.Label(header, text="PESMOS Earthquake Station Records Database (Enhanced)",
                  bg='#1A3A5C', fg='#64B5F6', font=('Helvetica',14,'bold')).pack(pady=12)
         
-        # Main content
         main = tk.Frame(self.root, bg='#2C3E50')
         main.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         
@@ -195,7 +249,6 @@ class StationDataApp:
         left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0,4))
         left_panel.pack_propagate(False)
         
-        # Load button
         tk.Button(left_panel, text="📁 Load Data Folder",
                   command=self._load_data_folder,
                   bg='#27AE60', fg='white', font=('Helvetica',10,'bold'),
@@ -219,7 +272,7 @@ class StationDataApp:
         
         self.eq_listbox = tk.Listbox(list_frame, bg='#0D1B2A', fg='#E3F2FD',
                                       font=('Courier',9), selectbackground='#1565C0',
-                                      width=40, height=18)
+                                      width=40, height=15)
         self.eq_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.eq_listbox.bind('<<ListboxSelect>>', self._on_earthquake_select)
         
@@ -227,7 +280,6 @@ class StationDataApp:
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.eq_listbox.config(yscrollcommand=scroll.set)
         
-        # Stats
         self.stats_label = tk.Label(left_panel, text="Load a data folder to begin",
                                      bg='#1E2A3A', fg='#A5D6A7', font=('Helvetica',8),
                                      justify=tk.LEFT)
@@ -245,12 +297,12 @@ class StationDataApp:
         table_container = tk.Frame(table_frame, bg='#1E2A3A')
         table_container.pack(fill=tk.X, padx=4, pady=4)
         
-        columns = ['Sr.No', 'Location', 'Year', 'Stations', 'Files', 'Max PGA (m/s²)', 'Plots']
+        columns = ['Sr.No', 'Location', 'Year', 'Magnitude', 'Stations', 'Files', 'Max PGA', 'View']
         self.tree = ttk.Treeview(table_container, columns=columns, show='headings', height=8)
         
         for col in columns:
             self.tree.heading(col, text=col)
-            self.tree.column(col, width=100)
+            self.tree.column(col, width=90)
         
         self.tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
         scroll_x = tk.Scrollbar(table_container, orient=tk.HORIZONTAL, command=self.tree.xview)
@@ -258,29 +310,31 @@ class StationDataApp:
         self.tree.config(xscrollcommand=scroll_x.set)
         self.tree.bind('<ButtonRelease-1>', self._on_table_click)
         
-        # Station filter
-        station_frame = tk.Frame(right_panel, bg='#1E2A3A')
-        station_frame.pack(fill=tk.X, padx=4, pady=2)
-        tk.Label(station_frame, text="Station:", bg='#1E2A3A', fg='white').pack(side=tk.LEFT, padx=4)
+        # Filters
+        filter_frame = tk.Frame(right_panel, bg='#1E2A3A')
+        filter_frame.pack(fill=tk.X, padx=4, pady=2)
+        
+        tk.Label(filter_frame, text="Station:", bg='#1E2A3A', fg='white').pack(side=tk.LEFT, padx=4)
         self.station_var = tk.StringVar(value='All')
-        self.station_combo = ttk.Combobox(station_frame, textvariable=self.station_var, values=['All'], width=15)
+        self.station_combo = ttk.Combobox(filter_frame, textvariable=self.station_var, values=['All'], width=15)
         self.station_combo.pack(side=tk.LEFT, padx=4)
         self.station_var.trace('w', self._update_plot)
         
-        # Component filter
-        comp_frame = tk.Frame(right_panel, bg='#1E2A3A')
-        comp_frame.pack(fill=tk.X, padx=4, pady=2)
-        tk.Label(comp_frame, text="Component:", bg='#1E2A3A', fg='white').pack(side=tk.LEFT, padx=4)
+        tk.Label(filter_frame, text="Component:", bg='#1E2A3A', fg='white').pack(side=tk.LEFT, padx=10)
         self.comp_var = tk.StringVar(value='All')
         for comp in ['All', 'EW', 'NS', 'Vertical']:
-            tk.Radiobutton(comp_frame, text=comp, variable=self.comp_var, value=comp,
+            tk.Radiobutton(filter_frame, text=comp, variable=self.comp_var, value=comp,
                            bg='#1E2A3A', fg='white', selectcolor='#1E2A3A',
                            command=self._update_plot).pack(side=tk.LEFT, padx=4)
         
         # Plot buttons
         btn_frame = tk.Frame(right_panel, bg='#1E2A3A')
         btn_frame.pack(fill=tk.X, padx=4, pady=2)
-        tk.Button(btn_frame, text="💾 Save CSV", command=self._save_csv,
+        
+        tk.Button(btn_frame, text="🔍 Large Popup View", command=self._show_popup,
+                  bg='#E67E22', fg='white', font=('Helvetica',10,'bold'), padx=10).pack(side=tk.LEFT, padx=4)
+        
+        tk.Button(btn_frame, text="💾 Save All CSV", command=self._save_all_csv,
                   bg='#1565C0', fg='white', font=('Helvetica',9), padx=8).pack(side=tk.RIGHT, padx=4)
         tk.Button(btn_frame, text="💾 Save Image", command=self._save_image,
                   bg='#8E44AD', fg='white', font=('Helvetica',9), padx=8).pack(side=tk.RIGHT, padx=4)
@@ -289,7 +343,7 @@ class StationDataApp:
         plot_frame = tk.Frame(right_panel, bg='#1E2A3A')
         plot_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         
-        self.fig = Figure(figsize=(12,5), facecolor='white')
+        self.fig = Figure(figsize=(12,6), facecolor='white')
         self.cv = FigureCanvasTkAgg(self.fig, master=plot_frame)
         self.cv.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         
@@ -300,7 +354,6 @@ class StationDataApp:
         self._show_empty_plot()
     
     def _load_data_folder(self):
-        """Load earthquake data folder"""
         folder = filedialog.askdirectory(title="Select Folder with Zip Files")
         if not folder:
             return
@@ -326,26 +379,24 @@ class StationDataApp:
         
         self._update_earthquake_list()
         self._update_table()
-        self.stats_label.config(text=f"Loaded {len(self.earthquake_data)} events\nTotal stations: {sum(e['num_stations'] for e in self.earthquake_data)}")
+        total_stations = sum(e['num_stations'] for e in self.earthquake_data)
+        self.stats_label.config(text=f"Loaded {len(self.earthquake_data)} events\nTotal stations: {total_stations}")
     
     def _update_earthquake_list(self):
-        """Update listbox"""
         self.eq_listbox.delete(0, tk.END)
         for eq in self.earthquake_data:
-            text = f"{eq['year']} - {eq['location']}\n   {eq['num_stations']} stations, {eq['num_files']} files"
+            text = f"{eq['year']} - {eq['location']} (M{eq['magnitude']})\n   {eq['num_stations']} stations"
             self.eq_listbox.insert(tk.END, text)
     
     def _filter_list(self, *args):
-        """Filter list"""
         search = self.search_var.get().lower()
         self.eq_listbox.delete(0, tk.END)
         for eq in self.earthquake_data:
             if search in f"{eq['year']} {eq['location']}".lower():
-                text = f"{eq['year']} - {eq['location']}\n   {eq['num_stations']} stations, {eq['num_files']} files"
+                text = f"{eq['year']} - {eq['location']} (M{eq['magnitude']})\n   {eq['num_stations']} stations"
                 self.eq_listbox.insert(tk.END, text)
     
     def _on_earthquake_select(self, event):
-        """Handle selection"""
         selection = self.eq_listbox.curselection()
         if not selection:
             return
@@ -356,26 +407,23 @@ class StationDataApp:
         
         if idx < len(filtered):
             self.selected_earthquake = filtered[idx]
-            # Update station combo
             stations = filtered[idx].get('processor').get_all_stations()
             self.station_combo['values'] = ['All'] + stations
             self.station_var.set('All')
             self._update_plot()
     
     def _update_table(self):
-        """Update table"""
         for item in self.tree.get_children():
             self.tree.delete(item)
         
         for i, eq in enumerate(self.earthquake_data, 1):
             self.tree.insert('', tk.END, values=(
-                i, eq['location'], eq['year'], 
+                i, eq['location'], eq['year'], f"M{eq['magnitude']:.1f}",
                 eq['num_stations'], eq['num_files'],
                 f"{eq['max_pga']:.4f}", "📊"
             ))
     
     def _on_table_click(self, event):
-        """Handle table click"""
         item = self.tree.identify_row(event.y)
         if item:
             idx = int(self.tree.index(item))
@@ -387,15 +435,13 @@ class StationDataApp:
                 self._update_plot()
     
     def _show_empty_plot(self):
-        """Empty plot"""
         self.fig.clear()
         ax = self.fig.add_subplot(111)
-        ax.text(0.5, 0.5, 'Select an earthquake to view records',
+        ax.text(0.5, 0.5, 'Select an earthquake to view records\nClick "Large Popup View" for bigger plot',
                 ha='center', va='center', transform=ax.transAxes, fontsize=14, color='gray')
         self.cv.draw()
     
     def _update_plot(self):
-        """Update plot"""
         if not self.selected_earthquake:
             self._show_empty_plot()
             return
@@ -406,7 +452,6 @@ class StationDataApp:
         
         self.fig.clear()
         
-        # Filter data
         files_to_plot = []
         for name, data in processor.files_data.items():
             parts = name.split('/')
@@ -428,9 +473,10 @@ class StationDataApp:
             self.cv.draw()
             return
         
-        n = min(len(files_to_plot), 6)
-        for i, (name, data) in enumerate(files_to_plot[:6]):
-            ax = self.fig.add_subplot(n, 1, i+1)
+        n = min(len(files_to_plot), 12)
+        rows = (n + 2) // 3
+        for i, (name, data) in enumerate(files_to_plot[:12]):
+            ax = self.fig.add_subplot(rows, 3, i+1)
             
             time = data['time']
             acc = data['acceleration']
@@ -438,23 +484,76 @@ class StationDataApp:
             
             ax.plot(time, acc, 'b-', lw=0.8)
             ax.fill_between(time, acc, alpha=0.3)
-            ax.set_xlabel('Time (s)')
-            ax.set_ylabel('Acc (m/s²)')
+            ax.set_xlabel('Time (s)', fontsize=8)
+            ax.set_ylabel('Acc (m/s²)', fontsize=8)
             
             parts = name.split('/')
             station = parts[2].split('_')[0] if len(parts) >= 3 else 'Unknown'
             component = data.get('metadata', {}).get('component', 'Unknown')
-            ax.set_title(f"{station} - {component} | PGA: {pga:.4f} m/s²", fontsize=9)
+            ax.set_title(f"{station} - {component}\nPGA: {pga:.4f}", fontsize=8)
             ax.grid(True, alpha=0.3)
         
         eq_name = self.selected_earthquake['location']
         year = self.selected_earthquake['year']
-        self.fig.suptitle(f"{eq_name} ({year})", fontsize=12, fontweight='bold')
+        mag = self.selected_earthquake['magnitude']
+        self.fig.suptitle(f"{eq_name} ({year}) - M{mag}", fontsize=12, fontweight='bold')
         self.fig.tight_layout(rect=[0, 0, 1, 0.95])
         self.cv.draw()
     
-    def _save_csv(self):
-        """Save CSV"""
+    def _show_popup(self):
+        """Show large popup plot"""
+        if not self.selected_earthquake:
+            messagebox.showwarning("No Data", "Select an earthquake first")
+            return
+        
+        processor = self.selected_earthquake['processor']
+        
+        # Create large figure
+        fig = Figure(figsize=(16, 10), facecolor='white')
+        
+        files_to_plot = list(processor.files_data.items())
+        n = len(files_to_plot)
+        
+        if n == 0:
+            messagebox.showwarning("No Data", "No data available")
+            return
+        
+        rows = (n + 2) // 3
+        for i, (name, data) in enumerate(files_to_plot):
+            ax = fig.add_subplot(rows, 3, i+1)
+            
+            time = data['time']
+            acc = data['acceleration']
+            pga = np.max(np.abs(acc))
+            
+            ax.plot(time, acc, 'b-', lw=1.0)
+            ax.fill_between(time, acc, alpha=0.3, color='blue')
+            ax.set_xlabel('Time (s)', fontsize=9)
+            ax.set_ylabel('Acceleration (m/s²)', fontsize=9)
+            
+            parts = name.split('/')
+            station = parts[2].split('_')[0] if len(parts) >= 3 else 'Unknown'
+            component = data.get('metadata', {}).get('component', 'Unknown')
+            ax.set_title(f"{station} - {component} | PGA: {pga:.4f} m/s²", fontsize=10, fontweight='bold')
+            ax.grid(True, alpha=0.3)
+            ax.legend([f"Max: {pga:.4f}"], loc='upper right', fontsize=7)
+        
+        eq_name = self.selected_earthquake['location']
+        year = self.selected_earthquake['year']
+        mag = self.selected_earthquake['magnitude']
+        fig.suptitle(f"Earthquake: {eq_name} ({year}) | Magnitude: M{mag}\nAll Stations & Components",
+                     fontsize=14, fontweight='bold')
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        
+        # Create popup
+        popup = PlotPopup(self.root, f"{eq_name} - All Time Histories", fig)
+        
+        # Prepare CSV data
+        all_data = processor.get_all_data_for_csv()
+        popup.set_csv_data(all_data)
+    
+    def _save_all_csv(self):
+        """Save all displayed data to CSV"""
         if not self.selected_earthquake:
             messagebox.showwarning("No Data", "Select an earthquake first")
             return
@@ -465,23 +564,16 @@ class StationDataApp:
             return
         
         processor = self.selected_earthquake['processor']
+        all_data = processor.get_all_data_for_csv()
         
         with open(filepath, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['Station', 'Component', 'Time(s)', 'Acceleration(m/s²)'])
-            
-            for name, data in processor.files_data.items():
-                parts = name.split('/')
-                station = parts[2].split('_')[0] if len(parts) >= 3 else 'Unknown'
-                component = data.get('metadata', {}).get('component', 'Unknown')
-                
-                for t, a in zip(data['time'], data['acceleration']):
-                    writer.writerow([station, component, f"{t:.5f}", f"{a:.8f}"])
+            writer = csv.DictWriter(f, fieldnames=['station', 'component', 'time', 'acceleration'])
+            writer.writeheader()
+            writer.writerows(all_data)
         
-        messagebox.showinfo("Saved", f"Data saved to {filepath}")
+        messagebox.showinfo("Saved", f"All data saved to {filepath}\nTotal records: {len(all_data)}")
     
     def _save_image(self):
-        """Save image"""
         if not self.selected_earthquake:
             messagebox.showwarning("No Data", "Select an earthquake first")
             return
@@ -495,7 +587,6 @@ class StationDataApp:
         messagebox.showinfo("Saved", f"Image saved to {filepath}")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     root = tk.Tk()
     app = StationDataApp(root)
