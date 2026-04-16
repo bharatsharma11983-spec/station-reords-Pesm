@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-Station Data GUI - PESMOS Earthquake Records Viewer (FULLY FIXED)
-- Magnitude: reads all files, takes maximum
-- Multi-column CSV export
-- Scrollable popup with better layout
-- Editable plot settings
+Station Data GUI - PESMOS Earthquake Records Viewer (FULLY FIXED v2)
+- Scrollable popup window
+- CSV per station file
+- Correct multi-column format
 """
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -18,6 +17,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 import re
 import csv
+import math
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DATA PROCESSOR - FIXED MAGNITUDE
@@ -47,40 +47,28 @@ class EarthquakeDataProcessor:
             year_match = re.search(r'(\d{4})', basename)
             self.metadata['year'] = int(year_match.group(1)) if year_match else 2000
             
-            # FIXED: Get max magnitude from all files
+            # Get max magnitude
             max_mag = 0
             for name, data in self.files_data.items():
                 mag = data.get('metadata', {}).get('magnitude', 0)
                 if mag and mag > max_mag:
                     max_mag = mag
             
-            if max_mag > 0:
-                self.metadata['magnitude'] = max_mag
-            else:
-                # Default based on year
-                self.metadata['magnitude'] = 4.5
+            self.metadata['magnitude'] = max_mag if max_mag > 0 else 4.5
     
     def _parse_file(self, content, filename):
         lines = content.strip().split('\n')
         metadata = {}
         data_lines = []
         
-        for line in lines[:50]:  # Scan more lines for magnitude
+        for line in lines[:50]:
             line = line.strip()
             
             match = re.search(r'Station\s*:\s*(\w+)', line, re.IGNORECASE)
             if match:
                 metadata['station'] = match.group(1)
             
-            # More comprehensive magnitude search
             match = re.search(r'(?:Mag|Magnitude)[:=\s]+(\d+\.?\d*)', line, re.IGNORECASE)
-            if match:
-                try:
-                    metadata['magnitude'] = float(match.group(1))
-                except:
-                    pass
-            
-            match = re.search(r'Intensity[:=\s]+(\d+\.?\d*)', line, re.IGNORECASE)
             if match:
                 try:
                     metadata['magnitude'] = float(match.group(1))
@@ -166,9 +154,8 @@ class EarthquakeDataProcessor:
                 stations.add(station_code)
         return sorted(list(stations))
     
-    def get_all_data_for_csv(self):
-        """Get all data for MULTI-COLUMN CSV export"""
-        # Group by station and component
+    def get_data_by_station(self):
+        """Get data organized by station"""
         data_by_station = {}
         
         for name, data in self.files_data.items():
@@ -176,13 +163,10 @@ class EarthquakeDataProcessor:
             station = parts[2].split('_')[0] if len(parts) >= 3 else 'Unknown'
             component = data.get('metadata', {}).get('component', 'Unknown')
             
-            key = f"{station}_{component}"
-            data_by_station[key] = {
-                'station': station,
-                'component': component,
-                'time': data['time'],
-                'acceleration': data['acceleration']
-            }
+            if station not in data_by_station:
+                data_by_station[station] = {}
+            
+            data_by_station[station][component] = data
         
         return data_by_station
 
@@ -199,7 +183,6 @@ class PlotSettingsDialog(tk.Toplevel):
         
         self.current_settings = current_settings
         self.update_callback = update_callback
-        
         self.vars = {}
         self._build_ui()
     
@@ -207,7 +190,6 @@ class PlotSettingsDialog(tk.Toplevel):
         tk.Label(self, text="Edit Plot Settings", bg='#1A3A5C', fg='#64B5F6',
                  font=('Helvetica',12,'bold'), pady=10).pack(fill=tk.X)
         
-        # Scrollable frame
         canvas = tk.Canvas(self, bg='#1E2A3A')
         scrollbar = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
         scrollable = tk.Frame(canvas, bg='#1E2A3A')
@@ -244,7 +226,7 @@ class PlotSettingsDialog(tk.Toplevel):
         tk.Entry(frame, textvariable=self.vars['ymax'], bg='#0D1B2A', fg='white', width=8).pack(side=tk.LEFT, padx=4)
         
         # Plot Size
-        tk.Label(scrollable, text="Plot Size (Width x Height):", bg='#1E2A3A', fg='#90CAF9', font=('Helvetica',10,'bold')).pack(pady=(10,5))
+        tk.Label(scrollable, text="Plot Size:", bg='#1E2A3A', fg='#90CAF9', font=('Helvetica',10,'bold')).pack(pady=(10,5))
         
         frame = tk.Frame(scrollable, bg='#1E2A3A')
         frame.pack()
@@ -255,11 +237,10 @@ class PlotSettingsDialog(tk.Toplevel):
         tk.Entry(frame, textvariable=self.vars['fig_height'], bg='#0D1B2A', fg='white', width=6).pack(side=tk.LEFT, padx=4)
         
         # Legend text
-        tk.Label(scrollable, text="Legend Text (comma separated):", bg='#1E2A3A', fg='#90CAF9', font=('Helvetica',10,'bold')).pack(pady=(10,5))
+        tk.Label(scrollable, text="Legend Text:", bg='#1E2A3A', fg='#90CAF9', font=('Helvetica',10,'bold')).pack(pady=(10,5))
         self.vars['legend_text'] = tk.StringVar(value=self.current_settings.get('legend_text', 'PGA'))
         tk.Entry(scrollable, textvariable=self.vars['legend_text'], bg='#0D1B2A', fg='white', width=40).pack()
         
-        # Show legend
         self.vars['show_legend'] = tk.BooleanVar(value=self.current_settings.get('show_legend', True))
         tk.Checkbutton(scrollable, text="Show Legend", variable=self.vars['show_legend'],
                       bg='#1E2A3A', fg='white', selectcolor='#1E2A3A').pack(pady=5)
@@ -302,7 +283,7 @@ class PlotSettingsDialog(tk.Toplevel):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# POPUP PLOT WINDOW - SCROLLABLE
+# POPUP PLOT WINDOW - SCROLLABLE CANVAS
 # ═══════════════════════════════════════════════════════════════════════════════
 class PlotPopup(tk.Toplevel):
     def __init__(self, parent, title):
@@ -314,7 +295,7 @@ class PlotPopup(tk.Toplevel):
         self.data_to_save = None
         self.plot_settings = {
             'xmin': 0, 'xmax': 100, 'ymin': -1, 'ymax': 1,
-            'fig_width': 16, 'fig_height': 12,
+            'fig_width': 14, 'fig_height': 10,
             'legend_text': 'PGA', 'show_legend': True
         }
         
@@ -330,27 +311,33 @@ class PlotPopup(tk.Toplevel):
         
         tk.Button(ctl, text="💾 Save Image", command=self._save_image,
                   bg='#8E44AD', fg='white', font=('Helvetica',10), padx=10).pack(side=tk.RIGHT, padx=4)
-        tk.Button(ctl, text="💾 Save CSV", command=self._save_csv,
-                  bg='#1565C0', fg='white', font=('Helvetica',10), padx=10).pack(side=tk.RIGHT, padx=4)
         
-        # Scrollable canvas for plots
-        self.canvas_frame = tk.Frame(self, bg='#1E2A3A')
-        self.canvas_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        # Scrollable frame for canvas
+        self.scroll_frame = tk.Frame(self, bg='#1E2A3A')
+        self.scroll_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         
-        self.fig = Figure(figsize=(16, 12), facecolor='white')
-        self.cv = FigureCanvasTkAgg(self.fig, master=self.canvas_frame)
-        self.cv.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        # Create canvas with scrollbar
+        self.canvas = tk.Canvas(self.scroll_frame, bg='white')
+        self.v_scroll = tk.Scrollbar(self.scroll_frame, orient="vertical", command=self.canvas.yview)
+        self.h_scroll = tk.Scrollbar(self.scroll_frame, orient="horizontal", command=self.canvas.xview)
+        self.canvas.configure(yscrollcommand=self.v_scroll.set, xscrollcommand=self.h_scroll.set)
         
-        toolbar = tk.Frame(self, bg='#1E2A3A')
-        toolbar.pack(fill=tk.X)
-        NavigationToolbar2Tk(self.cv, toolbar)
+        self.v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Create frame inside canvas
+        self.plot_container = tk.Frame(self.canvas, bg='white')
+        self.canvas.create_window((0, 0), window=self.plot_container, anchor='nw')
+        
+        self.fig = None
+        self.cv = None
     
     def _edit_settings(self):
         dialog = PlotSettingsDialog(self, self.plot_settings, self._update_settings)
     
     def _update_settings(self, settings):
         self.plot_settings.update(settings)
-        # Trigger redraw if we have data
         if hasattr(self, 'last_data'):
             self._update_plot(self.last_data)
     
@@ -360,17 +347,17 @@ class PlotPopup(tk.Toplevel):
         self._update_plot(data)
     
     def _update_plot(self, data_by_station):
-        """Update plot with scrollable layout and settings"""
         if not data_by_station:
             return
         
-        # Get settings
+        # Clear previous
+        for widget in self.plot_container.winfo_children():
+            widget.destroy()
+        
         xmin = self.plot_settings['xmin']
         xmax = self.plot_settings['xmax']
         ymin = self.plot_settings['ymin']
         ymax = self.plot_settings['ymax']
-        
-        self.fig.clear()
         
         items = list(data_by_station.items())
         n = len(items)
@@ -378,14 +365,15 @@ class PlotPopup(tk.Toplevel):
         if n == 0:
             return
         
-        # Calculate optimal grid
+        # Calculate rows needed (3 columns)
         cols = 3
-        rows = (n + cols - 1) // cols
+        rows = math.ceil(n / cols)
         
-        # Set figure size based on settings
+        # Set figure size
         fig_w = self.plot_settings['fig_width']
-        fig_h = self.plot_settings['fig_height']
-        self.fig.set_size_inches(fig_w, fig_h)
+        fig_h = rows * 3  # 3 per row
+        
+        self.fig = Figure(figsize=(fig_w, fig_h), facecolor='white')
         
         for i, (key, data) in enumerate(items):
             ax = self.fig.add_subplot(rows, cols, i+1)
@@ -394,31 +382,27 @@ class PlotPopup(tk.Toplevel):
             acc = data['acceleration']
             pga = np.max(np.abs(acc))
             
-            # Apply x-axis limits
             mask = (time >= xmin) & (time <= xmax)
             t_limited = time[mask]
             a_limited = acc[mask]
-            
-            # Apply y-axis limits
             a_clipped = np.clip(a_limited, ymin, ymax)
             
             ax.plot(t_limited, a_clipped, 'b-', lw=1.0)
             ax.fill_between(t_limited, a_clipped, alpha=0.3, color='blue')
             
-            # Apply limits
             ax.set_xlim(xmin, xmax)
             ax.set_ylim(ymin, ymax)
             
-            ax.set_xlabel('Time (s)', fontsize=9)
-            ax.set_ylabel('Acc (m/s²)', fontsize=9)
+            ax.set_xlabel('Time (s)', fontsize=8)
+            ax.set_ylabel('Acc (m/s²)', fontsize=8)
             
             station = data['station']
             component = data['component']
-            ax.set_title(f"{station} - {component}\nPGA: {pga:.4f} m/s²", fontsize=10, fontweight='bold')
+            ax.set_title(f"{station} - {component}\nPGA: {pga:.4f} m/s²", fontsize=9, fontweight='bold')
             ax.grid(True, alpha=0.3)
             
             if self.plot_settings['show_legend']:
-                ax.legend([f"{self.plot_settings['legend_text']}: {pga:.4f}"], loc='upper right', fontsize=7)
+                ax.legend([f"{self.plot_settings['legend_text']}: {pga:.4f}"], loc='upper right', fontsize=6)
         
         eq_name = self.eq_info.get('location', 'Unknown')
         year = self.eq_info.get('year', 'Unknown')
@@ -427,9 +411,18 @@ class PlotPopup(tk.Toplevel):
         self.fig.suptitle(f"Earthquake: {eq_name} ({year}) | M{mag}\nAll Station Time Histories",
                          fontsize=14, fontweight='bold')
         self.fig.tight_layout(rect=[0, 0, 1, 0.96])
-        self.cv.draw()
+        
+        # Create canvas in scrollable frame
+        self.cv = FigureCanvasTkAgg(self.fig, master=self.plot_container)
+        self.cv.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        
+        # Update scroll region
+        self.plot_container.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox('all'))
     
     def _save_image(self):
+        if not self.fig:
+            return
         filepath = filedialog.asksaveasfilename(defaultextension=".png",
                                                  filetypes=[("PNG", "*.png"), ("PDF", "*.pdf")])
         if filepath:
@@ -437,51 +430,7 @@ class PlotPopup(tk.Toplevel):
             messagebox.showinfo("Saved", f"Image saved to {filepath}")
     
     def _save_csv(self):
-        if not self.data_to_save:
-            messagebox.showwarning("No Data", "No data to save")
-            return
-        
-        filepath = filedialog.asksaveasfilename(defaultextension=".csv",
-                                                 filetypes=[("CSV", "*.csv")])
-        if not filepath:
-            return
-        
-        # MULTI-COLUMN CSV FORMAT
-        data_by_station = self.data_to_save
-        
-        with open(filepath, 'w', newline='') as f:
-            # First row: headers
-            all_keys = list(data_by_station.keys())
-            header1 = ['Time(s)']
-            header2 = ['Time']
-            
-            for key in all_keys:
-                station = data_by_station[key]['station']
-                component = data_by_station[key]['component']
-                header1.extend([f"{station}_{component}"] * len(data_by_station[key]['time']))
-                header2.extend([f"Acc_{station}_{component}"] * len(data_by_station[key]['time']))
-            
-            # Write headers
-            f.write(','.join(header1) + '\n')
-            f.write(','.join(header2) + '\n')
-            
-            # Find max length
-            max_len = max(len(d['time']) for d in data_by_station.values())
-            
-            # Write data rows
-            for i in range(max_len):
-                row = [f"{i * 0.005:.4f}"]  # time column
-                
-                for key in all_keys:
-                    data = data_by_station[key]
-                    if i < len(data['time']):
-                        row.append(f"{data['acceleration'][i]:.8f}")
-                    else:
-                        row.append('')
-                
-                f.write(','.join(row) + '\n')
-        
-        messagebox.showinfo("Saved", f"Multi-column CSV saved to {filepath}")
+        pass  # Handled by main app
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -490,7 +439,7 @@ class PlotPopup(tk.Toplevel):
 class StationDataApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("PESMOS Earthquake Station Records - Fixed")
+        self.root.title("PESMOS Earthquake Station Records - Fixed v2")
         self.root.geometry("1400x900")
         self.root.configure(bg='#2C3E50')
         
@@ -502,10 +451,9 @@ class StationDataApp:
         self._build_ui()
     
     def _build_ui(self):
-        # Header
         header = tk.Frame(self.root, bg='#1A3A5C', height=60)
         header.pack(fill=tk.X)
-        tk.Label(header, text="PESMOS Earthquake Station Records (Magnitude Fixed, Multi-column CSV)",
+        tk.Label(header, text="PESMOS Earthquake Station Records (Scrollable Popup, CSV per Station)",
                  bg='#1A3A5C', fg='#64B5F6', font=('Helvetica',14,'bold')).pack(pady=12)
         
         main = tk.Frame(self.root, bg='#2C3E50')
@@ -554,7 +502,7 @@ class StationDataApp:
         right_panel = tk.Frame(main, bg='#2C3E50')
         right_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        # Table frame
+        # Table
         table_frame = tk.LabelFrame(right_panel, text="Station Data Summary",
                                     bg='#1E2A3A', fg='#90CAF9', font=('Helvetica',10))
         table_frame.pack(fill=tk.X, padx=4, pady=4)
@@ -592,19 +540,17 @@ class StationDataApp:
                            bg='#1E2A3A', fg='white', selectcolor='#1E2A3A',
                            command=self._update_plot).pack(side=tk.LEFT, padx=4)
         
-        # Plot buttons
+        # Buttons
         btn_frame = tk.Frame(right_panel, bg='#1E2A3A')
         btn_frame.pack(fill=tk.X, padx=4, pady=2)
         
-        tk.Button(btn_frame, text="🔍 Large Popup View", command=self._show_popup,
+        tk.Button(btn_frame, text="🔍 Large Scrollable Popup", command=self._show_popup,
                   bg='#E67E22', fg='white', font=('Helvetica',10,'bold'), padx=10).pack(side=tk.LEFT, padx=4)
         
-        tk.Button(btn_frame, text="💾 Save All CSV (Multi-col)", command=self._save_all_csv,
+        tk.Button(btn_frame, text="💾 Save CSV (per station)", command=self._save_csv_per_station,
                   bg='#1565C0', fg='white', font=('Helvetica',9), padx=8).pack(side=tk.RIGHT, padx=4)
-        tk.Button(btn_frame, text="💾 Save Image", command=self._save_image,
-                  bg='#8E44AD', fg='white', font=('Helvetica',9), padx=8).pack(side=tk.RIGHT, padx=4)
         
-        # Plot frame
+        # Plot
         plot_frame = tk.Frame(right_panel, bg='#1E2A3A')
         plot_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         
@@ -702,7 +648,7 @@ class StationDataApp:
     def _show_empty_plot(self):
         self.fig.clear()
         ax = self.fig.add_subplot(111)
-        ax.text(0.5, 0.5, 'Select an earthquake to view records\nClick "Large Popup View" for bigger plot',
+        ax.text(0.5, 0.5, 'Select an earthquake to view records\nClick "Large Scrollable Popup"',
                 ha='center', va='center', transform=ax.transAxes, fontsize=14, color='gray')
         self.cv.draw()
     
@@ -770,61 +716,72 @@ class StationDataApp:
             messagebox.showwarning("No Data", "Select an earthquake first")
             return
         
-        # Close existing popup
         if self.popup and self.popup.winfo_exists():
             self.popup.destroy()
         
         processor = self.selected_earthquake['processor']
-        data_by_station = processor.get_all_data_for_csv()
+        data_by_station = processor.get_data_by_station()
         
         self.popup = PlotPopup(self.root, f"{self.selected_earthquake['location']} - All Time Histories")
         self.popup.set_data(data_by_station, self.selected_earthquake)
-        self.popup.data_to_save = data_by_station
     
-    def _save_all_csv(self):
+    def _save_csv_per_station(self):
+        """Save CSV files - one per station"""
         if not self.selected_earthquake:
             messagebox.showwarning("No Data", "Select an earthquake first")
             return
         
-        filepath = filedialog.asksaveasfilename(defaultextension=".csv",
-                                                 filetypes=[("CSV", "*.csv")])
-        if not filepath:
+        folder = filedialog.askdirectory(title="Select folder to save CSV files")
+        if not folder:
             return
         
         processor = self.selected_earthquake['processor']
-        data_by_station = processor.get_all_data_for_csv()
+        data_by_station = processor.get_data_by_station()
+        eq_info = self.selected_earthquake
         
-        # MULTI-COLUMN CSV
-        with open(filepath, 'w', newline='') as f:
-            all_keys = list(data_by_station.keys())
+        saved_count = 0
+        
+        for station, components in data_by_station.items():
+            # Create filename: StationName_Magnitude.csv
+            filename = f"{station}_M{eq_info['magnitude']:.1f}.csv"
+            filepath = os.path.join(folder, filename)
             
-            # Headers
-            header1 = ['Time(s)']
-            header2 = ['Time']
+            # Multi-column format: Time, EW, NS, Vertical in columns
+            max_len = max(len(c['time']) for c in components.values()) if components else 0
             
-            for key in all_keys:
-                station = data_by_station[key]['station']
-                component = data_by_station[key]['component']
-                n_pts = len(data_by_station[key]['time'])
-                header1.extend([f"{station}_{component}"] * n_pts)
-                header2.extend([f"Acc"] * n_pts)
-            
-            f.write(','.join(header1) + '\n')
-            f.write(','.join(header2) + '\n')
-            
-            max_len = max(len(d['time']) for d in data_by_station.values())
-            
-            for i in range(max_len):
-                row = [f"{i * 0.005:.4f}"]
-                for key in all_keys:
-                    data = data_by_station[key]
-                    if i < len(data['time']):
-                        row.append(f"{data['acceleration'][i]:.8f}")
+            with open(filepath, 'w', newline='') as f:
+                writer = csv.writer(f)
+                
+                # Header row 1: Station info
+                writer.writerow([
+                    f"Station: {station}",
+                    f"Earthquake: {eq_info['location']}",
+                    f"Year: {eq_info['year']}",
+                    f"Magnitude: {eq_info['magnitude']}"
+                ])
+                
+                # Header row 2: Column headers
+                headers = ['Time(s)']
+                for comp in ['EW', 'NS', 'Vertical']:
+                    if comp in components:
+                        headers.extend([f"{comp}_Acc"] * len(components[comp]['time']))
                     else:
-                        row.append('')
-                f.write(','.join(row) + '\n')
+                        headers.extend([''])
+                writer.writerow(headers)
+                
+                # Data rows
+                for i in range(max_len):
+                    row = [f"{i * 0.005:.4f}"]
+                    for comp in ['EW', 'NS', 'Vertical']:
+                        if comp in components and i < len(components[comp]['acceleration']):
+                            row.append(f"{components[comp]['acceleration'][i]:.8f}")
+                        else:
+                            row.append('')
+                    writer.writerow(row)
+            
+            saved_count += 1
         
-        messagebox.showinfo("Saved", f"Multi-column CSV saved to {filepath}")
+        messagebox.showinfo("Saved", f"Saved {saved_count} CSV files to:\n{folder}")
     
     def _save_image(self):
         if not self.selected_earthquake:
