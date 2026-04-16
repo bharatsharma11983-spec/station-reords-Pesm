@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Station Map GUI - Enhanced with Google Map overlay, editable settings, toggle
+Station Map GUI - Enhanced with full legend editing and image background
 """
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser
@@ -14,32 +14,31 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 import re
 import csv
-import urllib.request
-import io
 from PIL import Image
+import matplotlib.image as mpimg
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # LOCATION DATABASE
 # ═══════════════════════════════════════════════════════════════════════════════
 LOCATION_COORDS = {
-    'Chamoli': (30.33, 79.33, 4.5),
-    'Uttarkashi': (30.73, 78.43, 4.8),
-    'Chamba': (32.73, 76.13, 4.2),
-    'Pithoragarh': (29.63, 80.23, 4.0),
-    'Bageshwar': (29.83, 79.53, 3.9),
-    'Kangra': (31.93, 76.13, 4.1),
-    'Almora': (29.63, 79.63, 3.8),
-    'Champawat': (29.33, 80.13, 3.7),
-    'Rudraprayag': (30.33, 78.93, 4.0),
-    'Bhutan': (27.50, 90.50, 4.5),
-    'Hindukush': (36.50, 71.00, 5.0),
-    'Nepal': (28.00, 84.00, 5.5),
-    'Nicobar': (9.00, 93.00, 5.0),
-    'Uttarakhand': (30.0, 79.0, 4.5),
-    'Himachal': (32.0, 77.0, 4.3),
+    'Chamoli': (30.33, 79.33, 4.8),
+    'Uttarkashi': (30.73, 78.43, 5.2),
+    'Chamba': (32.73, 76.13, 4.5),
+    'Pithoragarh': (29.63, 80.23, 4.3),
+    'Bageshwar': (29.83, 79.53, 4.0),
+    'Kangra': (31.93, 76.13, 4.4),
+    'Almora': (29.63, 79.63, 3.9),
+    'Champawat': (29.33, 80.13, 4.0),
+    'Rudraprayag': (30.33, 78.93, 4.2),
+    'Bhutan': (27.50, 90.50, 4.8),
+    'Hindukush': (36.50, 71.00, 5.5),
+    'Nepal': (28.00, 84.00, 6.0),
+    'Nicobar': (9.00, 93.00, 5.2),
+    'Uttarakhand': (30.0, 79.0, 4.8),
+    'Himachal': (32.0, 77.0, 4.5),
 }
 
-# India boundary approximate coordinates
+# India boundary
 INDIA_BOUNDARY = [
     (35.5, 77.0), (35.0, 78.0), (34.5, 78.5), (34.0, 79.0),
     (33.0, 79.5), (32.0, 80.0), (31.0, 80.5), (30.0, 81.0),
@@ -70,34 +69,182 @@ INDIA_BOUNDARY = [
 ]
 
 
+class LegendSettingsDialog(tk.Toplevel):
+    def __init__(self, parent, settings, update_callback):
+        super().__init__(parent)
+        self.title("Edit Legend & Plot Settings")
+        self.geometry("450x750")
+        self.configure(bg='#1E2A3A')
+        
+        self.settings = settings
+        self.update_callback = update_callback
+        self.color_buttons = {}
+        
+        self._build_ui()
+    
+    def _build_ui(self):
+        canvas = tk.Canvas(self, bg='#1E2A3A')
+        scrollbar = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        scrollable = tk.Frame(canvas, bg='#1E2A3A')
+        
+        scrollable.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        tk.Label(scrollable, text="Edit Legend & Plot Settings", bg='#1A3A5C', fg='#64B5F6',
+                 font=('Helvetica',12,'bold'), pady=10).pack(fill=tk.X)
+        
+        # Source settings
+        self._add_section(scrollable, "Source Marker")
+        self._add_entry(scrollable, "source_marker", self.settings.get('source_marker', '*'))
+        self._add_color_picker(scrollable, "source_color", "Source Color")
+        self._add_entry(scrollable, "source_size", self.settings.get('source_size', 200), "Size")
+        
+        # Station settings
+        self._add_section(scrollable, "Station Marker")
+        self._add_entry(scrollable, "station_marker", self.settings.get('station_marker', 'o'))
+        self._add_color_picker(scrollable, "station_color", "Station Color")
+        self._add_entry(scrollable, "station_size", self.settings.get('station_size', 80), "Size")
+        
+        # Distance circles
+        self._add_section(scrollable, "Distance Circles")
+        for dist in [10, 50, 100, 200, 500]:
+            self._add_color_picker(scrollable, f"circle_{dist}", f"{dist} km Color")
+        
+        self._add_entry(scrollable, "circle_linewidth", self.settings.get('circle_linewidth', 2.0), "Line Width")
+        self._add_entry(scrollable, "circle_linestyle", self.settings.get('circle_linestyle', '--'), "Line Style")
+        
+        # Boundaries
+        self._add_section(scrollable, "Boundaries")
+        self._add_color_picker(scrollable, "india_color", "India Boundary Color")
+        self._add_entry(scrollable, "india_linewidth", self.settings.get('india_linewidth', 1.5), "India Width")
+        self._add_color_picker(scrollable, "nepal_color", "Nepal Border Color")
+        self._add_entry(scrollable, "nepal_linewidth", self.settings.get('nepal_linewidth', 2.0), "Nepal Width")
+        
+        # Legend text
+        self._add_section(scrollable, "Legend Text")
+        self._add_entry(scrollable, "source_label", self.settings.get('source_label', 'Earthquake Source'))
+        self._add_entry(scrollable, "circle_label", self.settings.get('circle_label', 'Distance'))
+        
+        # Buttons
+        btn_frame = tk.Frame(scrollable, bg='#1E2A3A')
+        btn_frame.pack(pady=20)
+        
+        tk.Button(btn_frame, text="Apply", command=self._apply,
+                  bg='#27AE60', fg='white', font=('Helvetica',10,'bold'), padx=15).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Reset", command=self._reset,
+                  bg='#E74C3C', fg='white', font=('Helvetica',10), padx=15).pack(side=tk.LEFT, padx=5)
+    
+    def _add_section(self, parent, text):
+        tk.Label(parent, text=text, bg='#1E2A3A', fg='#90CAF9', font=('Helvetica',10,'bold')).pack(pady=(15,5), anchor='w', padx=10)
+    
+    def _add_entry(self, parent, key, default, label=None):
+        frame = tk.Frame(parent, bg='#1E2A3A')
+        frame.pack(fill=tk.X, padx=15, pady=2)
+        lbl = label if label else key
+        tk.Label(frame, text=f"{lbl}:", bg='#1E2A3A', fg='white', width=15, anchor='w').pack(side=tk.LEFT)
+        var = tk.StringVar(value=str(default))
+        setattr(self, f"var_{key}", var)
+        tk.Entry(frame, textvariable=var, bg='#0D1B2A', fg='white', width=15).pack(side=tk.LEFT)
+    
+    def _add_color_picker(self, parent, key, label):
+        frame = tk.Frame(parent, bg='#1E2A3A')
+        frame.pack(fill=tk.X, padx=15, pady=2)
+        tk.Label(frame, text=f"{label}:", bg='#1E2A3A', fg='white', width=15, anchor='w').pack(side=tk.LEFT)
+        
+        default_color = self.settings.get(key, '#FF0000')
+        btn = tk.Button(frame, text="Choose", bg=default_color, fg='white', width=10,
+                       command=lambda: self._pick_color(key, btn))
+        btn.pack(side=tk.LEFT)
+        setattr(self, f"btn_{key}", btn)
+    
+    def _pick_color(self, key, btn):
+        color = colorchooser.askcolor(title=f"Choose {key}")[1]
+        if color:
+            btn.config(bg=color)
+            setattr(self, f"color_{key}", color)
+    
+    def _apply(self):
+        new_settings = {}
+        
+        # Get all values
+        for key in ['source_marker', 'source_size', 'station_marker', 'station_size',
+                   'circle_linewidth', 'circle_linestyle', 'india_linewidth', 'nepal_linewidth',
+                   'source_label', 'circle_label']:
+            var = getattr(self, f"var_{key}", None)
+            if var:
+                val = var.get()
+                try:
+                    new_settings[key] = float(val) if '.' in val else val
+                except:
+                    new_settings[key] = val
+        
+        # Colors
+        for key in ['source_color', 'station_color', 'india_color', 'nepal_color']:
+            color = getattr(self, f"color_{key}", None)
+            if color:
+                new_settings[key] = color
+            elif key in self.settings:
+                new_settings[key] = self.settings[key]
+        
+        # Circle colors
+        for dist in [10, 50, 100, 200, 500]:
+            key = f"circle_{dist}"
+            color = getattr(self, f"color_{key}", None)
+            if color:
+                new_settings[f'circle_{dist}'] = color
+            else:
+                new_settings[f'circle_{dist}'] = self.settings.get(f'circle_{dist}', '#FF0000')
+        
+        self.update_callback(new_settings)
+        self.destroy()
+    
+    def _reset(self):
+        defaults = {
+            'source_marker': '*', 'source_color': '#FF0000', 'source_size': 200,
+            'station_marker': 'o', 'station_color': '#0000FF', 'station_size': 80,
+            'circle_10': '#00FF00', 'circle_50': '#00FFFF', 'circle_100': '#FFFF00',
+            'circle_200': '#FFA500', 'circle_500': '#FF0000',
+            'circle_linewidth': 2.0, 'circle_linestyle': '--',
+            'india_color': '#888888', 'india_linewidth': 1.5,
+            'nepal_color': '#FF6666', 'nepal_linewidth': 2.0,
+            'source_label': 'Earthquake Source', 'circle_label': 'Distance'
+        }
+        
+        for key, val in defaults.items():
+            var = getattr(self, f"var_{key}", None)
+            if var:
+                var.set(str(val))
+            
+            btn = getattr(self, f"btn_{key}", None)
+            if btn and 'color' in key:
+                btn.config(bg=val)
+
+
 class StationMapApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Earthquake Station Map - Enhanced")
+        self.root.title("Earthquake Station Map - Fully Editable")
         self.root.geometry("1400x900")
         self.root.configure(bg='#2C3E50')
         
         self.earthquake_data = []
-        self.google_map = None
-        self.map_alpha = 0.9
+        self.background_image = None
         
-        # Editable settings
+        # Default settings
         self.settings = {
-            'source_color': '#FF0000',
-            'source_marker': '*',
-            'source_size': 200,
-            'station_color': '#0000FF',
-            'station_marker': 'o',
-            'station_size': 80,
-            'circle_colors': {10: '#00FF00', 50: '#00FFFF', 100: '#FFFF00', 200: '#FFA500', 500: '#FF0000'},
-            'circle_linewidth': 2.0,
-            'show_india': True,
-            'india_color': '#888888',
-            'show_nepal': True,
-            'nepal_color': '#FFAAAA',
-            'show_source_label': True,
-            'show_station_labels': True,
-            'title_fontsize': 14,
+            'source_marker': '*', 'source_color': '#FF0000', 'source_size': 200,
+            'station_marker': 'o', 'station_color': '#0000FF', 'station_size': 80,
+            'circle_10': '#00FF00', 'circle_50': '#00FFFF', 'circle_100': '#FFFF00',
+            'circle_200': '#FFA500', 'circle_500': '#FF0000',
+            'circle_linewidth': 2.0, 'circle_linestyle': '--',
+            'india_color': '#888888', 'india_linewidth': 1.5,
+            'nepal_color': '#FF6666', 'nepal_linewidth': 2.0,
+            'source_label': 'Earthquake Source', 'circle_label': 'Distance',
+            'show_labels': True, 'show_legend': True
         }
         
         self._build_ui()
@@ -106,7 +253,7 @@ class StationMapApp:
         # Header
         header = tk.Frame(self.root, bg='#1A3A5C', height=50)
         header.pack(fill=tk.X)
-        tk.Label(header, text="Earthquake Station Map with Google Overlay & Editable Settings",
+        tk.Label(header, text="Station Map - Full Legend Editing & Background Image",
                  bg='#1A3A5C', fg='#64B5F6', font=('Helvetica',12,'bold')).pack(pady=10)
         
         # Main
@@ -118,25 +265,25 @@ class StationMapApp:
         left.pack(side=tk.LEFT, fill=tk.Y, padx=(0,4))
         left.pack_propagate(False)
         
-        # Load & Google Map
+        # Load buttons
         tk.Button(left, text="📁 Load Data Folder", command=self._load_data,
                   bg='#27AE60', fg='white', font=('Helvetica',10,'bold'), padx=10, pady=6).pack(fill=tk.X, padx=8, pady=6)
         
-        tk.Button(left, text="🗺️ Load Google Map", command=self._load_google_map,
+        tk.Button(left, text="🖼️ Load Background Image", command=self._load_background_image,
                   bg='#3498DB', fg='white', font=('Helvetica',9), padx=10, pady=4).pack(fill=tk.X, padx=8, pady=4)
         
-        # Google Map toggle
-        self.google_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(left, text="Show Google Map Overlay (90%)", variable=self.google_var,
+        # Background toggle
+        self.bg_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(left, text="Show Background Image", variable=self.bg_var,
                       bg='#1E2A3A', fg='white', selectcolor='#1E2A3A',
                       command=self._update_map).pack(anchor='w', padx=20, pady=4)
         
         # Alpha slider
-        tk.Label(left, text="Map Transparency:", bg='#1E2A3A', fg='#90CAF9', font=('Helvetica',8)).pack(pady=(8,0))
+        tk.Label(left, text="Background Transparency:", bg='#1E2A3A', fg='#90CAF9', font=('Helvetica',8)).pack(pady=(5,0))
         self.alpha_slider = tk.Scale(left, from_=0, to=100, orient=tk.HORIZONTAL,
                                       bg='#1E2A3A', fg='white', length=200,
                                       command=self._on_alpha_change)
-        self.alpha_slider.set(90)
+        self.alpha_slider.set(30)
         self.alpha_slider.pack(padx=8)
         
         # Distance circles
@@ -149,11 +296,11 @@ class StationMapApp:
             tk.Checkbutton(left, text=f"{dist} km", variable=var, bg='#1E2A3A', fg='white',
                           selectcolor='#1E2A3A', command=self._update_map).pack(anchor='w', padx=20)
         
-        # Edit settings button
-        tk.Button(left, text="⚙️ Edit Plot Settings", command=self._edit_settings,
-                  bg='#9B59B6', fg='white', font=('Helvetica',9), padx=10, pady=4).pack(fill=tk.X, padx=8, pady=8)
+        # Settings button
+        tk.Button(left, text="⚙️ Edit Legend Settings", command=self._edit_legend,
+                  bg='#9B59B6', fg='white', font=('Helvetica',9), padx=10, pady=6).pack(fill=tk.X, padx=8, pady=8)
         
-        # Show/hide options
+        # Show/hide
         tk.Label(left, text="Show/Hide:", bg='#1E2A3A', fg='#90CAF9').pack(pady=(10,4))
         
         self.india_var = tk.BooleanVar(value=True)
@@ -171,6 +318,11 @@ class StationMapApp:
                       bg='#1E2A3A', fg='white', selectcolor='#1E2A3A',
                       command=self._update_map).pack(anchor='w', padx=20)
         
+        self.legend_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(left, text="Show Legend", variable=self.legend_var,
+                      bg='#1E2A3A', fg='white', selectcolor='#1E2A3A',
+                      command=self._update_map).pack(anchor='w', padx=20)
+        
         # Source location
         tk.Label(left, text="Source Coordinates:", bg='#1E2A3A', fg='#90CAF9').pack(pady=(10,4))
         self.source_var = tk.StringVar(value='')
@@ -181,13 +333,13 @@ class StationMapApp:
         # Earthquake list
         tk.Label(left, text="Earthquakes:", bg='#1E2A3A', fg='#90CAF9').pack(pady=(10,4))
         
-        self.eq_listbox = tk.Listbox(left, bg='#0D1B2A', fg='#E3F2FD', height=10)
+        self.eq_listbox = tk.Listbox(left, bg='#0D1B2A', fg='#E3F2FD', height=8)
         self.eq_listbox.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
         self.eq_listbox.bind('<<ListboxSelect>>', self._on_select)
         
-        # Save buttons
+        # Save button
         tk.Button(left, text="💾 Save Image", command=self._save_image,
-                  bg='#8E44AD', fg='white', font=('Helvetica',9), padx=10, pady=4).pack(fill=tk.X, padx=8, pady=4)
+                  bg='#8E44AD', fg='white', font=('Helvetica',9), padx=10, pady=6).pack(fill=tk.X, padx=8, pady=6)
         
         # Right - Map
         right = tk.Frame(main, bg='#1E2A3A')
@@ -203,27 +355,24 @@ class StationMapApp:
         
         self._show_empty_map()
     
-    def _load_google_map(self):
-        """Try to load a static map image from OpenStreetMap"""
-        try:
-            # Try to get a static map - this is a simplified approach
-            # For a real implementation, you'd use the Static Maps API
-            messagebox.showinfo("Info", "Google Map overlay works with pre-downloaded images.\n\n"
-                           "For best results:\n1. Download a map screenshot from Google Maps\n2. Use 'Load Image' option\n\nUsing simplified background for now.")
-            self._create_fallback_map()
-        except Exception as e:
-            messagebox.showwarning("Error", f"Could not load map: {e}")
-    
-    def _create_fallback_map(self):
-        """Create a fallback simple map background"""
-        try:
-            # Create a simple colored background to simulate terrain
-            self.google_map = "fallback"
-        except:
-            pass
+    def _load_background_image(self):
+        """Load background image - FIXED for jpg/bmp"""
+        filepath = filedialog.askopenfilename(
+            title="Select Background Image",
+            filetypes=[
+                ("Image files", "*.jpg *.jpeg *.png *.bmp *.JPG *.JPEG *.PNG *.BMP"),
+                ("All files", "*.*")
+            ]
+        )
+        
+        if filepath:
+            try:
+                self.background_image = mpimg.imread(filepath)
+                messagebox.showinfo("Success", f"Background image loaded!\nToggle 'Show Background Image' to display.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not load image: {e}")
     
     def _on_alpha_change(self, value):
-        self.map_alpha = int(value) / 100.0
         self._update_map()
     
     def _load_data(self):
@@ -241,15 +390,9 @@ class StationMapApp:
         
         for zip_file in sorted(zip_files):
             name = zip_file.replace('.zip', '')
-            
             lat, lon, mag = self._get_coords(name)
-            
             self.earthquake_data.append({
-                'name': name,
-                'zip_file': zip_file,
-                'lat': lat,
-                'lon': lon,
-                'magnitude': mag
+                'name': name, 'zip_file': zip_file, 'lat': lat, 'lon': lon, 'magnitude': mag
             })
         
         self.eq_listbox.delete(0, tk.END)
@@ -273,7 +416,6 @@ class StationMapApp:
         
         idx = selection[0]
         eq = self.earthquake_data[idx]
-        
         self.source_var.set(f"{eq['lat']:.2f}, {eq['lon']:.2f}")
         self._update_map()
     
@@ -284,60 +426,11 @@ class StationMapApp:
                 ha='center', va='center', transform=ax.transAxes, fontsize=14, color='gray')
         self.cv.draw()
     
-    def _edit_settings(self):
-        """Open settings dialog"""
-        win = tk.Toplevel(self.root)
-        win.title("Edit Plot Settings")
-        win.geometry("400x500")
-        win.configure(bg='#1E2A3A')
-        
-        tk.Label(win, text="Edit Plot Appearance", bg='#1A3A5C', fg='#64B5F6',
-                 font=('Helvetica',12,'bold'), pady=10).pack(fill=tk.X)
-        
-        # Source settings
-        tk.Label(win, text="Source Marker:", bg='#1E2A3A', fg='white').pack(anchor='w', padx=10)
-        self.source_marker_var = tk.StringVar(value=self.settings['source_marker'])
-        tk.Entry(win, textvariable=self.source_marker_var, bg='#0D1B2A', fg='white', width=10).pack(anchor='w', padx=20)
-        
-        tk.Label(win, text="Source Color:", bg='#1E2A3A', fg='white').pack(anchor='w', padx=10, pady=(10,0))
-        self.source_color_btn = tk.Button(win, text="Choose Color", bg=self.settings['source_color'],
-                                          command=lambda: self._choose_color('source_color'))
-        self.source_color_btn.pack(anchor='w', padx=20)
-        
-        # Station settings
-        tk.Label(win, text="Station Marker:", bg='#1E2A3A', fg='white').pack(anchor='w', padx=10, pady=(10,0))
-        self.station_marker_var = tk.StringVar(value=self.settings['station_marker'])
-        tk.Entry(win, textvariable=self.station_marker_var, bg='#0D1B2A', fg='white', width=10).pack(anchor='w', padx=20)
-        
-        tk.Label(win, text="Station Color:", bg='#1E2A3A', fg='white').pack(anchor='w', padx=10, pady=(10,0))
-        self.station_color_btn = tk.Button(win, text="Choose Color", bg=self.settings['station_color'],
-                                           command=lambda: self._choose_color('station_color'))
-        self.station_color_btn.pack(anchor='w', padx=20)
-        
-        # Circle linewidth
-        tk.Label(win, text="Circle Line Width:", bg='#1E2A3A', fg='white').pack(anchor='w', padx=10, pady=(10,0))
-        self.circle_width_var = tk.DoubleVar(value=self.settings['circle_linewidth'])
-        tk.Scale(win, from_=0.5, to=5, resolution=0.5, variable=self.circle_width_var,
-                bg='#1E2A3A', fg='white', orient=tk.HORIZONTAL).pack(anchor='w', padx=20)
-        
-        # Apply button
-        tk.Button(win, text="Apply Settings", command=self._apply_settings,
-                  bg='#27AE60', fg='white', font=('Helvetica',10,'bold'), padx=20, pady=10).pack(pady=20)
+    def _edit_legend(self):
+        dialog = LegendSettingsDialog(self.root, self.settings, self._update_settings)
     
-    def _choose_color(self, setting_key):
-        color = colorchooser.askcolor(title="Choose color")[1]
-        if color:
-            if setting_key == 'source_color':
-                self.settings['source_color'] = color
-                self.source_color_btn.config(bg=color)
-            elif setting_key == 'station_color':
-                self.settings['station_color'] = color
-                self.station_color_btn.config(bg=color)
-    
-    def _apply_settings(self):
-        self.settings['source_marker'] = self.source_marker_var.get()
-        self.settings['station_marker'] = self.station_marker_var.get()
-        self.settings['circle_linewidth'] = self.circle_width_var.get()
+    def _update_settings(self, new_settings):
+        self.settings.update(new_settings)
         self._update_map()
     
     def _update_map(self):
@@ -356,30 +449,33 @@ class StationMapApp:
         src_lon = eq['lon']
         
         self.fig.clear()
-        
-        # Main plot
         ax = self.fig.add_subplot(111)
         
-        # Google map overlay (simplified background)
-        if self.google_var.get():
-            ax.set_facecolor('#E8F4E8')
+        # Background image
+        if self.bg_var.get() and self.background_image is not None:
+            alpha = self.alpha_slider.get() / 100.0
+            ax.imshow(self.background_image, extent=[src_lon-5, src_lon+5, src_lat-5, src_lat+5], 
+                     alpha=alpha, aspect='auto', zorder=0)
         
         # India boundary
         if self.india_var.get():
             lats = [p[0] for p in INDIA_BOUNDARY]
             lons = [p[1] for p in INDIA_BOUNDARY]
-            ax.plot(lons, lats, '-', color='#888888', linewidth=1.5, alpha=0.5, label='India Boundary')
+            ax.plot(lons, lats, '-', color=self.settings['india_color'], 
+                   linewidth=self.settings['india_linewidth'], alpha=0.6, label='India')
         
-        # Nepal border (approximate)
+        # Nepal border
         if self.nepal_var.get():
             nepal_lats = [26.4, 27.0, 28.0, 28.5, 29.0, 29.5, 30.0, 30.5, 30.0, 29.5, 28.5, 27.5, 26.4]
             nepal_lons = [80.5, 80.5, 81.0, 82.0, 83.0, 84.0, 84.5, 84.0, 83.0, 82.0, 81.0, 80.5, 80.5]
-            ax.plot(nepal_lons, nepal_lats, '--', color='#FF6666', linewidth=2, alpha=0.7, label='Nepal Border')
+            ax.plot(nepal_lons, nepal_lats, '--', color=self.settings['nepal_color'], 
+                   linewidth=self.settings['nepal_linewidth'], alpha=0.8, label='Nepal')
         
         # Source
         ax.plot(src_lon, src_lat, self.settings['source_marker'], 
-                markersize=20, color=self.settings['source_color'], 
-                markeredgecolor='black', label='Earthquake Source')
+                markersize=self.settings['source_size']//20, 
+                color=self.settings['source_color'], 
+                markeredgecolor='black', label=self.settings['source_label'])
         
         if self.labels_var.get():
             ax.annotate(f"{eq['name']}\nM{eq['magnitude']}", (src_lon, src_lat), 
@@ -391,6 +487,7 @@ class StationMapApp:
         lat_per_km = 1 / 111.0
         lon_per_km = 1 / (111.0 * np.cos(np.radians(src_lat)))
         
+        circle_handles = []
         for dist, var in self.dist_vars.items():
             if var.get():
                 r_lat = dist * lat_per_km
@@ -400,23 +497,26 @@ class StationMapApp:
                 circle_lat = src_lat + r_lat * np.sin(theta)
                 circle_lon = src_lon + r_lon * np.cos(theta)
                 
-                ax.plot(circle_lon, circle_lat, '--', 
-                       color=self.settings['circle_colors'][dist], 
-                       linewidth=self.settings['circle_linewidth'], 
-                       alpha=0.8, label=f'{dist} km')
+                color = self.settings.get(f'circle_{dist}', '#FF0000')
+                ls = self.settings.get('circle_linestyle', '--')
+                lw = self.settings.get('circle_linewidth', 2.0)
                 
-                # Label
-                label_lat = src_lat + r_lat * 0.7
-                label_lon = src_lon + r_lon * 0.7
-                ax.annotate(f'{dist}km', (label_lon, label_lat), fontsize=8, 
-                           color=self.settings['circle_colors'][dist], alpha=0.8)
+                h, = ax.plot(circle_lon, circle_lat, ls, color=color, 
+                           linewidth=lw, alpha=0.8, label=f'{dist} km')
+                circle_handles.append(h)
+                
+                if self.labels_var.get():
+                    label_lat = src_lat + r_lat * 0.7
+                    label_lon = src_lon + r_lon * 0.7
+                    ax.annotate(f'{dist}km', (label_lon, label_lat), fontsize=8, color=color, alpha=0.8)
         
-        # Sample stations
+        # Stations
         stations = self._get_station_locations(eq['name'])
         for st_name, (st_lat, st_lon) in stations.items():
             dist = self._calculate_distance(src_lat, src_lon, st_lat, st_lon)
             ax.plot(st_lon, st_lat, self.settings['station_marker'], 
-                   markersize=10, color=self.settings['station_color'],
+                   markersize=self.settings['station_size']//20, 
+                   color=self.settings['station_color'],
                    markeredgecolor='white', markeredgewidth=1)
             
             if self.labels_var.get():
@@ -424,13 +524,10 @@ class StationMapApp:
                            textcoords="offset points", xytext=(5,5), fontsize=7,
                            bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
         
-        # Add reference locations
+        # Reference cities
         ref_locations = {
-            'Delhi': (28.61, 77.21),
-            'Dehradun': (30.32, 78.03),
-            'Nepal': (28.39, 84.12),
-            'Haridwar': (29.96, 78.16),
-            'Rishikesh': (30.11, 78.29),
+            'Delhi': (28.61, 77.21), 'Dehradun': (30.32, 78.03), 'Nepal': (28.39, 84.12),
+            'Haridwar': (29.96, 78.16), 'Rishikesh': (30.11, 78.29),
         }
         for name, (lat, lon) in ref_locations.items():
             if self.labels_var.get():
@@ -440,13 +537,14 @@ class StationMapApp:
         # Map settings
         ax.set_xlabel('Longitude (°E)', fontsize=10)
         ax.set_ylabel('Latitude (°N)', fontsize=10)
-        ax.set_title(f"Station Map - {eq['name']} (M{eq['magnitude']})\n"
-                    f"Source: {src_lat:.2f}°N, {src_lon:.2f}°E | Distance circles: 10-500 km",
-                    fontsize=self.settings['title_fontsize'], fontweight='bold')
-        ax.legend(loc='lower left', fontsize=8, framealpha=0.9)
+        ax.set_title(f"Station Map - {eq['name']} (M{eq['magnitude']})\nSource: {src_lat:.2f}°N, {src_lon:.2f}°E",
+                    fontsize=self.settings.get('title_fontsize', 14), fontweight='bold')
+        
+        if self.legend_var.get():
+            ax.legend(loc='lower left', fontsize=8, framealpha=0.9)
+        
         ax.grid(True, alpha=0.3)
         
-        # Set view - Uttarakhand region
         margin = 3.0
         ax.set_xlim(src_lon - margin, src_lon + margin)
         ax.set_ylim(src_lat - margin, src_lat + margin)
@@ -457,16 +555,9 @@ class StationMapApp:
     
     def _get_station_locations(self, eq_name):
         return {
-            'BAG': (29.85, 79.87),
-            'CHM': (30.33, 79.33),
-            'DPR': (29.44, 79.44),
-            'HAL': (29.95, 79.53),
-            'KGR': (30.21, 78.78),
-            'LHW': (30.45, 78.12),
-            'RNK': (29.62, 79.41),
-            'THL': (30.38, 78.47),
-            'RJT': (30.12, 78.21),
-            'DLD': (29.87, 79.42),
+            'BAG': (29.85, 79.87), 'CHM': (30.33, 79.33), 'DPR': (29.44, 79.44),
+            'HAL': (29.95, 79.53), 'KGR': (30.21, 78.78), 'LHW': (30.45, 78.12),
+            'RNK': (29.62, 79.41), 'THL': (30.38, 78.47), 'RJT': (30.12, 78.21),
         }
     
     def _calculate_distance(self, lat1, lon1, lat2, lon2):
