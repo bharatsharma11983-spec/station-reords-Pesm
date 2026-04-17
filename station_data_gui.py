@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Station Data GUI - FINAL VERSION
-- Proper multi-column CSV format (Time, EW, NS, V as columns)
-- Fixed station parsing
-- Scrollable large popup
+Station Data GUI - FINAL VERSION v2
+- Fixed trace_add() for Tcl 9 compatibility
+- Fixed callback arguments
 """
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -19,13 +18,11 @@ import re
 import csv
 import math
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# DATA PROCESSOR
-# ═══════════════════════════════════════════════════════════════════════════════
+
 class EarthquakeDataProcessor:
     def __init__(self, zip_path):
         self.zip_path = zip_path
-        self.raw_data = {}  # filename -> acceleration array
+        self.raw_data = {}
         self.metadata = {}
         self._extract_and_parse()
     
@@ -37,26 +34,16 @@ class EarthquakeDataProcessor:
                         content = z.read(name).decode('utf-8', errors='ignore')
                         data = self._parse_file(content, name)
                         if data is not None:
-                            # Store by full filename for now
-                            self.raw_data[name] = {
-                                'acceleration': data['acceleration'],
-                                'time': data['time'],
-                                'dt': data['dt'],
-                                'station': data.get('station', 'Unknown'),
-                                'component': data.get('component', 'Unknown'),
-                                'magnitude': data.get('magnitude', 0)
-                            }
+                            self.raw_data[name] = data
                     except Exception as e:
-                        print(f"Error parsing {name}: {e}")
+                        print(f"Error: {name}: {e}")
             
-            # Extract earthquake metadata from filename
             basename = os.path.basename(self.zip_path)
             self.metadata['earthquake'] = basename.replace('.zip', '')
             
             year_match = re.search(r'(\d{4})', basename)
             self.metadata['year'] = int(year_match.group(1)) if year_match else 2000
             
-            # Get max magnitude from all files
             max_mag = 0
             for name, data in self.raw_data.items():
                 if data.get('magnitude', 0) > max_mag:
@@ -65,19 +52,15 @@ class EarthquakeDataProcessor:
             self.metadata['magnitude'] = max_mag if max_mag > 0 else 4.5
     
     def _parse_file(self, content, filename):
-        """Parse acceleration file"""
         lines = content.strip().split('\n')
-        
         metadata = {}
         values = []
         
         for line in lines:
             line = line.strip()
-            # Skip empty lines
             if not line:
                 continue
             
-            # Try to parse as number
             parts = line.split()
             for part in parts:
                 part = part.strip()
@@ -87,27 +70,15 @@ class EarthquakeDataProcessor:
                     val = float(part)
                     values.append(val)
                 except:
-                    # It's metadata text
-                    if 'station' in part.lower():
-                        m = re.search(r'(\w+)', part)
-                        if m:
-                            metadata['station'] = m.group(1)
-                    elif 'mag' in part.lower():
-                        m = re.search(r'(\d+\.?\d*)', part)
-                        if m:
-                            metadata['magnitude'] = float(m.group(1))
+                    pass
             
-            # Extract station from filename path
             parts = filename.split('/')
             if len(parts) >= 2:
-                filename_station = parts[-1].split('.')[0]
-                if filename_station:
-                    metadata['station'] = filename_station
+                metadata['station'] = parts[-1].split('.')[0]
         
         if not values:
             return None
         
-        # Determine component from extension
         if filename.endswith('.ew'):
             metadata['component'] = 'EW'
         elif filename.endswith('.ns'):
@@ -115,7 +86,6 @@ class EarthquakeDataProcessor:
         elif filename.endswith('.vt'):
             metadata['component'] = 'V'
         
-        # Assume dt = 0.005 seconds (common for seismic data)
         dt = 0.005
         time = np.arange(len(values)) * dt
         
@@ -129,7 +99,6 @@ class EarthquakeDataProcessor:
         }
     
     def get_summary(self):
-        # Count unique stations
         stations = set()
         for name, data in self.raw_data.items():
             stations.add(data.get('station', 'Unknown'))
@@ -152,60 +121,24 @@ class EarthquakeDataProcessor:
         }
     
     def get_all_stations(self):
-        """Get unique stations"""
         stations = set()
         for name, data in self.raw_data.items():
             stations.add(data.get('station', 'Unknown'))
         return sorted(list(stations))
     
     def get_data_by_station(self):
-        """Group data by station - each station has EW, NS, V components"""
         data_by_station = {}
-        
         for name, data in self.raw_data.items():
             station = data.get('station', 'Unknown')
             component = data.get('component', 'Unknown')
             
             if station not in data_by_station:
                 data_by_station[station] = {}
-            
             data_by_station[station][component] = data
         
         return data_by_station
-    
-    def get_csv_data(self, station):
-        """Get CSV-ready data for a station"""
-        if station not in self.get_data_by_station():
-            return None
-        
-        components = self.get_data_by_station()[station]
-        
-        # Get max length
-        max_len = 0
-        for comp, data in components.items():
-            max_len = max(max_len, len(data['time']))
-        
-        # Build rows
-        rows = []
-        for i in range(max_len):
-            row = []
-            t = i * 0.005
-            row.append(f"{t:.4f}")
-            
-            for comp in ['EW', 'NS', 'V']:
-                if comp in components and i < len(components[comp]['acceleration']):
-                    row.append(f"{components[comp]['acceleration'][i]:.8f}")
-                else:
-                    row.append('')
-            
-            rows.append(row)
-        
-        return rows
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# LARGE SCROLLABLE POPUP
-# ═══════════════════════════════════════════════════════════════════════════════
 class LargePlotPopup(tk.Toplevel):
     def __init__(self, parent, title):
         super().__init__(parent)
@@ -218,11 +151,12 @@ class LargePlotPopup(tk.Toplevel):
             'fig_width': 16, 'fig_height': 12,
             'legend_text': 'PGA', 'show_legend': True
         }
+        self.data_by_station = None
+        self.eq_info = None
         
         self._build_ui()
     
     def _build_ui(self):
-        # Controls
         ctl = tk.Frame(self, bg='#1E2A3A', height=50)
         ctl.pack(fill=tk.X, padx=4, pady=4)
         
@@ -232,7 +166,6 @@ class LargePlotPopup(tk.Toplevel):
         tk.Button(ctl, text="💾 Save Image", command=self._save_image,
                 bg='#8E44AD', fg='white', font=('Helvetica',10), padx=10).pack(side=tk.RIGHT, padx=4)
         
-        # Scrollable plot container
         self.canvas_frame = tk.Frame(self, bg='white')
         self.canvas_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         
@@ -256,6 +189,8 @@ class LargePlotPopup(tk.Toplevel):
     
     def _update_settings(self, settings):
         self.plot_settings.update(settings)
+        if self.data_by_station:
+            self._render_plots()
     
     def set_data(self, data_by_station, eq_info):
         self.data_by_station = data_by_station
@@ -263,12 +198,10 @@ class LargePlotPopup(tk.Toplevel):
         self._render_plots()
     
     def _render_plots(self):
-        # Clear previous
         for w in self.plot_inner.winfo_children():
             w.destroy()
         
-        data = self.data_by_station
-        if not data:
+        if not self.data_by_station:
             return
         
         xmin = self.plot_settings['xmin']
@@ -276,7 +209,7 @@ class LargePlotPopup(tk.Toplevel):
         ymin = self.plot_settings['ymin']
         ymax = self.plot_settings['ymax']
         
-        stations = list(data.keys())
+        stations = list(self.data_by_station.keys())
         n = len(stations)
         cols = 3
         rows = math.ceil(n / cols)
@@ -287,9 +220,8 @@ class LargePlotPopup(tk.Toplevel):
         self.fig = Figure(figsize=(fig_w, fig_h), facecolor='white')
         
         for idx, station in enumerate(stations):
-            components = data[station]
+            components = self.data_by_station[station]
             
-            # Plot each component
             for comp_idx, (comp, comp_data) in enumerate(components.items()):
                 ax = self.fig.add_subplot(rows * 3, cols, idx * 3 + comp_idx + 1)
                 
@@ -297,7 +229,6 @@ class LargePlotPopup(tk.Toplevel):
                 acc = comp_data['acceleration']
                 pga = np.max(np.abs(acc))
                 
-                # Apply limits
                 mask = (time >= xmin) & (time <= xmax)
                 t_plot = time[mask]
                 a_plot = np.clip(acc[mask], ymin, ymax)
@@ -333,9 +264,6 @@ class LargePlotPopup(tk.Toplevel):
             messagebox.showinfo("Saved", f"Image saved to {path}")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════════════
-# PLOT SETTINGS DIALOG
-# ══════════════════════���════════════════════════════════════════════════════════════════
 class PlotSettingsDialog(tk.Toplevel):
     def __init__(self, parent, settings, update_callback):
         super().__init__(parent)
@@ -364,23 +292,15 @@ class PlotSettingsDialog(tk.Toplevel):
         tk.Label(frame, text="Plot Settings", bg='#1A3A5C', fg='#64B5F6',
                 font=('Helvetica',12,'bold'), pady=10).pack()
         
-        # X Range
         self._add_entry(frame, "xmin", "X Min:", str(self.settings.get('xmin', 0)))
         self._add_entry(frame, "xmax", "X Max:", str(self.settings.get('xmax', 60)))
-        
-        # Y Range
         self._add_entry(frame, "ymin", "Y Min:", str(self.settings.get('ymin', -1)))
         self._add_entry(frame, "ymax", "Y Max:", str(self.settings.get('ymax', 1)))
-        
-        # Size
-        self._add_entry(frame, "fig_width", "Figure Width:", str(self.settings.get('fig_width', 14)))
-        self._add_entry(frame, "fig_height", "Figure Height:", str(self.settings.get('fig_height', 10)))
-        
-        # Legend
+        self._add_entry(frame, "fig_width", "Width:", str(self.settings.get('fig_width', 14)))
+        self._add_entry(frame, "fig_height", "Height:", str(self.settings.get('fig_height', 10)))
         self._add_entry(frame, "legend_text", "Legend:", self.settings.get('legend_text', 'PGA'))
         self._add_check(frame, "show_legend", "Show Legend:", self.settings.get('show_legend', True))
         
-        # Buttons
         btns = tk.Frame(frame, bg='#1E2A3A')
         btns.pack(pady=15)
         tk.Button(btns, text="Apply", command=self._apply, bg='#27AE60', fg='white', padx=15).pack(side=tk.LEFT, padx=5)
@@ -427,13 +347,10 @@ class PlotSettingsDialog(tk.Toplevel):
         self.vars['show_legend'].set(True)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# MAIN APP
-# ═══════════════════════════════════════════════════════════════════════════════
 class StationDataApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("PESMOS Station Records - FINAL VERSION")
+        self.root.title("PESMOS Station Records - FINAL v2")
         self.root.geometry("1500x1000")
         self.root.configure(bg='#2C3E50')
         
@@ -445,15 +362,12 @@ class StationDataApp:
         self._build_ui()
     
     def _build_ui(self):
-        # Header
-        tk.Label(self.root, text="PESMOS Station Records - FINAL VERSION",
+        tk.Label(self.root, text="PESMOS Station Records - FINAL v2",
                bg='#1A3A5C', fg='#64B5F6', font=('Helvetica',14,'bold'), pady=10).pack(fill=tk.X)
         
-        # Main container
         main = tk.Frame(self.root, bg='#2C3E50')
         main.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         
-        # LEFT PANEL
         left = tk.Frame(main, bg='#1E2A3A', width=300)
         left.pack(side=tk.LEFT, fill=tk.Y, padx=(0,4))
         left.pack_propagate(False)
@@ -461,28 +375,24 @@ class StationDataApp:
         tk.Button(left, text="📁 Load Data Folder", command=self._load_folder,
                 bg='#27AE60', fg='white', font=('Helvetica',10,'bold'), padx=10, pady=6).pack(fill=tk.X, padx=8, pady=8)
         
-        # Search
         tk.Label(left, text="🔍 Search:", bg='#1E2A3A', fg='#90CAF9').pack(pady=(5,0))
         self.search_var = tk.StringVar()
-        self.search_var.trace('w', self._filter_list)
+        # Use trace_add instead of deprecated trace
+        self.search_var.trace_add('write', self._filter_list)
         tk.Entry(left, textvariable=self.search_var, bg='#0D1B2A', fg='white', width=30).pack(padx=8, pady=4)
         
-        # Earthquake list
         tk.Label(left, text="Earthquakes:", bg='#1E2A3A', fg='#90CAF9', font=('Helvetica',10,'bold')).pack(pady=(10,4))
         self.eq_list = tk.Listbox(left, bg='#0D1B2A', fg='#E3F2FD', height=10)
         self.eq_list.pack(fill=tk.BOTH, expand=True, padx=8)
         self.eq_list.bind('<<ListboxSelect>>', self._on_eq_select)
         
-        # Stats
         self.stats = tk.Label(left, text="Load data folder to begin",
                         bg='#1E2A3A', fg='#A5D6A7', font=('Helvetica',8))
         self.stats.pack(pady=8, padx=8, anchor='w')
         
-        # RIGHT PANEL
         right = tk.Frame(main, bg='#2C3E50')
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        # Filters
         filter_frame = tk.Frame(right, bg='#1E2A3A')
         filter_frame.pack(fill=tk.X, padx=4, pady=4)
         
@@ -490,7 +400,7 @@ class StationDataApp:
         self.station_var = tk.StringVar(value='All')
         self.station_combo = ttk.Combobox(filter_frame, textvariable=self.station_var, values=['All'], width=15)
         self.station_combo.pack(side=tk.LEFT, padx=5)
-        self.station_var.trace('w', self._update_plot)
+        self.station_var.trace_add('write', self._update_plot)
         
         tk.Label(filter_frame, text="Component:", bg='#1E2A3A', fg='white').pack(side=tk.LEFT, padx=15)
         self.comp_var = tk.StringVar(value='All')
@@ -499,7 +409,6 @@ class StationDataApp:
                        bg='#1E2A3A', fg='white', selectcolor='#1E2A3A',
                        command=self._update_plot).pack(side=tk.LEFT, padx=3)
         
-        # Buttons
         btn_frame = tk.Frame(right, bg='#1E2A3A')
         btn_frame.pack(fill=tk.X, padx=4)
         
@@ -509,7 +418,6 @@ class StationDataApp:
         tk.Button(btn_frame, text="💾 Save CSV (per station)", command=self._save_csv,
                 bg='#1565C0', fg='white', padx=10).pack(side=tk.RIGHT, padx=4)
         
-        # Plot area
         plot_frame = tk.Frame(right, bg='#1E2A3A')
         plot_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         
@@ -517,7 +425,6 @@ class StationDataApp:
         self.cv = FigureCanvasTkAgg(self.fig, master=plot_frame)
         self.cv.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         
-        # Toolbar
         tb = tk.Frame(plot_frame, bg='#1E2A3A')
         tb.pack(fill=tk.X)
         NavigationToolbar2Tk(self.cv, tb)
@@ -569,7 +476,6 @@ class StationDataApp:
         if not sel:
             return
         
-        # Find actual index after filtering
         idx = sel[0]
         filtered = [eq for eq in self.earthquake_data 
                    if self.search_var.get().lower() in f"{eq['year']} {eq['location']}".lower()]
@@ -588,7 +494,7 @@ class StationDataApp:
                ha='center', va='center', transform=ax.transAxes, fontsize=14, color='gray')
         self.cv.draw()
     
-    def _update_plot(self):
+    def _update_plot(self, *args):
         if not self.selected_earthquake:
             self._show_empty()
             return
@@ -599,7 +505,6 @@ class StationDataApp:
         
         data = proc.get_data_by_station()
         
-        # Filter
         if station != 'All':
             data = {station: data.get(station, {})}
         
@@ -656,7 +561,6 @@ class StationDataApp:
         popup.set_data(data, info)
     
     def _save_csv(self):
-        """Save CSV files - one per station"""
         if not self.selected_earthquake:
             messagebox.showwarning("Warning", "Select an earthquake first")
             return
@@ -675,14 +579,12 @@ class StationDataApp:
         
         saved = 0
         for station, components in data.items():
-            # Filename: StationName_M4.5.csv
             filename = f"{station}_M{info['magnitude']:.1f}.csv"
             filepath = os.path.join(folder, filename)
             
             with open(filepath, 'w', newline='') as f:
                 writer = csv.writer(f)
                 
-                # Row 1: Station info
                 writer.writerow([
                     f"Station: {station}",
                     f"Earthquake: {info['location']}",
@@ -690,15 +592,12 @@ class StationDataApp:
                     f"Magnitude: {info['magnitude']:.1f}"
                 ])
                 
-                # Row 2: Column headers - Time, EW, NS, V
                 writer.writerow(['Time(s)', 'EW_Acc', 'NS_Acc', 'V_Acc'])
                 
-                # Find max length
                 max_len = 0
                 for comp, d in components.items():
                     max_len = max(max_len, len(d['time']))
                 
-                # Data rows
                 for i in range(max_len):
                     row = [f"{i * 0.005:.4f}"]
                     for comp in ['EW', 'NS', 'V']:
@@ -713,7 +612,6 @@ class StationDataApp:
         messagebox.showinfo("Saved", f"Saved {saved} CSV files\n{folder}")
 
 
-# Import navigation toolbar
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
 if __name__ == "__main__":

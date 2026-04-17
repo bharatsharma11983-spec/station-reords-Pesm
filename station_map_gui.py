@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Station Map GUI - FINAL VERSION
-- Fixed legend editor (numeric types)
-- Click on text to edit (font, bold, color, size)
+Station Map GUI - FINAL VERSION v2
+- Fixed trace_add() for Tcl 9
+- Fixed callback arguments
+- Click text to edit
 """
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser
@@ -14,11 +15,8 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 import matplotlib.image as mpimg
-from matplotlib import patches
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# COORDINATES DATABASE
-# ═══════════════════════════════════════════════════════════════════════════════
+
 LOCATION_COORDS = {
     'Chamoli': (30.33, 79.33, 4.8),
     'Uttarkashi': (30.73, 78.43, 5.2),
@@ -52,9 +50,6 @@ INDIA_BOUNDARY = [
 ]
 
 
-# ═══════════════════════════════════════════════════════════════════════════════════════
-# TEXT EDITOR DIALOG
-# ═══════════════════════════════════════════════════════════════════════════════
 class TextEditDialog(tk.Toplevel):
     def __init__(self, parent, text, fontsize, fontweight, color):
         super().__init__(parent)
@@ -97,7 +92,6 @@ class TextEditDialog(tk.Toplevel):
                             command=self._pick_color).pack(side=tk.LEFT)
         tk.Label(color_frame, textvariable=self.color_var, bg='#1E2A3A', fg='white').pack(side=tk.LEFT, padx=10)
         
-        # Buttons
         btns = tk.Frame(f, bg='#1E2A3A')
         btns.pack(pady=20)
         tk.Button(btns, text="Apply", command=self._apply, bg='#27AE60', fg='white',
@@ -121,9 +115,6 @@ class TextEditDialog(tk.Toplevel):
         self.destroy()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# LEGEND SETTINGS DIALOG
-# ═══════════════════════════════════════════════════════════════════════════════
 class LegendSettingsDialog(tk.Toplevel):
     def __init__(self, parent, settings, update_callback):
         super().__init__(parent)
@@ -152,19 +143,16 @@ class LegendSettingsDialog(tk.Toplevel):
         tk.Label(scrollable, text="Edit Legend & Plot Settings", bg='#1A3A5C', fg='#64B5F6',
                 font=('Helvetica',12,'bold'), pady=10).pack(fill=tk.X)
         
-        # Source marker
         self._add_section(scrollable, "Source Marker")
         self._add_entry(scrollable, "source_marker", "Marker:", self.settings.get('source_marker', '*'))
         self._add_entry(scrollable, "source_size", "Size:", str(int(self.settings.get('source_size', 200))))
         self._add_color_entry(scrollable, "source_color", "Color:", self.settings.get('source_color', '#FF0000'))
         
-        # Station marker
         self._add_section(scrollable, "Station Marker")
         self._add_entry(scrollable, "station_marker", "Marker:", self.settings.get('station_marker', 'o'))
         self._add_entry(scrollable, "station_size", "Size:", str(int(self.settings.get('station_size', 80))))
         self._add_color_entry(scrollable, "station_color", "Color:", self.settings.get('station_color', '#0000FF'))
         
-        # Distance circles
         self._add_section(scrollable, "Distance Circles")
         self._add_entry(scrollable, "circle_linewidth", "Line Width:", str(self.settings.get('circle_linewidth', 2.0)))
         
@@ -172,17 +160,14 @@ class LegendSettingsDialog(tk.Toplevel):
             self._add_color_entry(scrollable, f"circle_{dist}", f"{dist} km:",
                            self.settings.get(f'circle_{dist}', '#FF0000'))
         
-        # Boundaries
         self._add_section(scrollable, "Boundaries")
         self._add_color_entry(scrollable, "india_color", "India:", self.settings.get('india_color', '#888888'))
         self._add_entry(scrollable, "india_linewidth", "India Width:", str(self.settings.get('india_linewidth', 1.5)))
         self._add_color_entry(scrollable, "nepal_color", "Nepal:", self.settings.get('nepal_color', '#FF6666'))
         
-        # Labels
         self._add_section(scrollable, "Labels")
         self._add_entry(scrollable, "source_label", "Source Label:", self.settings.get('source_label', 'Earthquake Source'))
         
-        # Buttons
         btns = tk.Frame(scrollable, bg='#1E2A3A')
         btns.pack(pady=15)
         tk.Button(btns, text="Apply", command=self._apply, bg='#27AE60', fg='white', padx=15).pack(side=tk.LEFT, padx=5)
@@ -216,7 +201,6 @@ class LegendSettingsDialog(tk.Toplevel):
         new_settings = {}
         for key, var in self.vars.items():
             val = var.get()
-            # Convert numeric values where needed
             if key in ['source_size', 'station_size', 'circle_linewidth', 'india_linewidth']:
                 try:
                     new_settings[key] = float(val)
@@ -241,21 +225,17 @@ class LegendSettingsDialog(tk.Toplevel):
             self.vars[key].set(str(val))
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# MAIN APP
-# ═══════════════════════════════════════════════════════════════════════════════
 class StationMapApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Station Map GUI - FINAL VERSION")
+        self.root.title("Station Map GUI - FINAL v2")
         self.root.geometry("1500x1000")
         self.root.configure(bg='#2C3E50')
         
         self.earthquake_data = []
         self.background_image = None
-        self.editable_texts = []  # Store text annotations
+        self.editable_texts = []
         
-        # Default settings with proper numeric types
         self.settings = {
             'source_marker': '*', 'source_color': '#FF0000', 'source_size': 200,
             'station_marker': 'o', 'station_color': '#0000FF', 'station_size': 80,
@@ -270,15 +250,12 @@ class StationMapApp:
         self._build_ui()
     
     def _build_ui(self):
-        # Header
-        tk.Label(self.root, text="Station Map - FINAL (Click text to edit)",
+        tk.Label(self.root, text="Station Map - FINAL v2 (Click text to edit)",
                bg='#1A3A5C', fg='#64B5F6', font=('Helvetica',12,'bold'), pady=10).pack(fill=tk.X)
         
-        # Main
         main = tk.Frame(self.root, bg='#2C3E50')
         main.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         
-        # LEFT PANEL
         left = tk.Frame(main, bg='#1E2A3A', width=280)
         left.pack(side=tk.LEFT, fill=tk.Y, padx=(0,4))
         left.pack_propagate(False)
@@ -325,7 +302,8 @@ class StationMapApp:
         
         tk.Label(left, text="Source Coords:", bg='#1E2A3A', fg='#90CAF9').pack(pady=(10,4))
         self.source_var = tk.StringVar(value='')
-        self.source_var.trace('w', self._update_map)
+        # Fixed: use trace_add instead of deprecated trace
+        self.source_var.trace_add('write', self._update_map)
         tk.Entry(left, textvariable=self.source_var, bg='#0D1B2A', fg='white', width=22).pack(padx=8)
         
         tk.Label(left, text="Earthquakes:", bg='#1E2A3A', fg='#90CAF9').pack(pady=(10,4))
@@ -336,7 +314,6 @@ class StationMapApp:
         tk.Button(left, text="💾 Save Image", command=self._save,
                   bg='#8E44AD', fg='white', padx=10, pady=6).pack(fill=tk.X, padx=8, pady=6)
         
-        # RIGHT PANEL
         right = tk.Frame(main, bg='#1E2A3A')
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
@@ -422,16 +399,13 @@ class StationMapApp:
         self._update_map()
     
     def _on_canvas_click(self, event):
-        """Handle click on canvas to edit text"""
         if event.inaxes is None:
             return
         
         ax = event.inaxes
-        # Check if click is near any text annotation
-        for text_obj, (label_key,eq) in self.editable_texts:
+        for text_obj, _ in self.editable_texts:
             contains, _ = text_obj.contains(event)
             if contains:
-                # Open edit dialog
                 dialog = TextEditDialog(
                     self.root,
                     text_obj.get_text(),
@@ -448,7 +422,7 @@ class StationMapApp:
                     self.canvas.draw()
                 return
     
-    def _update_map(self):
+    def _update_map(self, *args):
         if not self.earthquake_data:
             self._show_empty()
             return
@@ -464,26 +438,22 @@ class StationMapApp:
         ax = self.fig.add_subplot(111)
         self.editable_texts = []
         
-        # Background
         if self.bg_var.get() and self.background_image is not None:
             ax.imshow(self.background_image, extent=[src_lon-5, src_lon+5, src_lat-5, src_lat+5],
                      alpha=0.3, aspect='auto', zorder=0)
         
-        # India boundary
         if self.india_var.get():
             lats = [p[0] for p in INDIA_BOUNDARY]
             lons = [p[1] for p in INDIA_BOUNDARY]
             ax.plot(lons, lats, '-', color=self.settings['india_color'],
                    linewidth=self.settings['india_linewidth'], alpha=0.6, label='India')
         
-        # Nepal
         if self.nepal_var.get():
             nepal_lats = [26.4, 27.0, 28.0, 28.5, 29.0, 29.5, 30.0, 30.5, 30.0, 29.5, 28.5, 27.5, 26.4]
             nepal_lons = [80.5, 80.5, 81.0, 82.0, 83.0, 84.0, 84.5, 84.0, 83.0, 82.0, 81.0, 80.5, 80.5]
             ax.plot(nepal_lons, nepal_lats, '--', color=self.settings['nepal_color'],
                    linewidth=2, alpha=0.8, label='Nepal')
         
-        # Source marker
         src_size = int(self.settings.get('source_size', 200))
         ax.plot(src_lon, src_lat, self.settings['source_marker'],
                markersize=src_size//20,
@@ -491,7 +461,6 @@ class StationMapApp:
                markeredgecolor='black',
                label=self.settings['source_label'])
         
-        # Source label (editable)
         if self.labels_var.get():
             text = ax.annotate(f"{eq['name']}\nM{eq['magnitude']}", (src_lon, src_lat),
                              textcoords="offset points", xytext=(15,10),
@@ -499,7 +468,6 @@ class StationMapApp:
                              bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
             self.editable_texts.append((text, ('source', eq)))
         
-        # Distance circles
         lat_per_km = 1 / 111.0
         lon_per_km = 1 / (111.0 * np.cos(np.radians(src_lat)))
         
@@ -521,7 +489,6 @@ class StationMapApp:
                                       fontsize=8, color=color, alpha=0.8)
                     self.editable_texts.append((text, (f'circle_{dist}', eq)))
         
-        # Reference cities
         for city, (lat, lon) in [('Delhi', (28.61, 77.21)), ('Dehradun', (30.32, 78.03))]:
             if self.labels_var.get():
                 text = ax.plot(lon, lat, 's', markersize=8, color='purple', alpha=0.6)
